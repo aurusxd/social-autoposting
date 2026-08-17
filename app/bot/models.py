@@ -10,13 +10,23 @@ MediaType = Literal["photo", "video"]
 class DraftMedia:
     file_id: str
     media_type: MediaType
+    file_path: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {"file_id": self.file_id, "media_type": self.media_type}
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "file_id": self.file_id,
+            "media_type": self.media_type,
+            "file_path": self.file_path,
+        }
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> DraftMedia:
-        return cls(file_id=str(value["file_id"]), media_type=value["media_type"])
+        file_path = value.get("file_path")
+        return cls(
+            file_id=str(value["file_id"]),
+            media_type=value["media_type"],
+            file_path=str(file_path) if file_path else None,
+        )
 
 
 @dataclass(frozen=True, slots=True)

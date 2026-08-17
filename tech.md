@@ -11,11 +11,14 @@ Telegram-бот приёма контента. Пользователь шлёт
 - Python 3.12+
 - aiogram 3.x — Telegram-бот (приём контента + UI выбора целей)
 - SQLite — хранилище (файл `data/app.db`)
+- SQLAlchemy 2.x — ORM и репозитории
+- Alembic — миграции схемы SQLite
 - ruff — линт + форматирование
 - pytest — тесты
 - loguru — логирование
 - PyYAML — конфиг
-- APScheduler или чистый asyncio-таск — воркер очереди (см. «Очередь»)
+- Celery 5.x — выполнение заданий публикации
+- Redis — брокер Celery; таблица `publish_jobs` остаётся источником состояния
 - Публикаторы (неофициальные, риск блокировки аккаунта — известное ограничение проекта):
   - Telegram: aiogram Bot API (официальный)
   - WhatsApp: Green API или Wappi (WhatsApp Web-сессия) — провайдер фиксируется на этапе реализации паблишера, интерфейс не зависит от выбора
@@ -31,11 +34,17 @@ app/
     keyboards.py
   core/
     config.py           # загрузка config.yaml + .env
-    db.py                # соединение sqlite, миграции
-    models.py             # dataclass-модели: Post, MediaFile, PublishJob
-  queue/
-    worker.py            # цикл воркера, поллинг publish_jobs
-    repo.py               # CRUD над publish_jobs
+  database/
+    database.py          # SQLAlchemy engine + сессии SQLite
+    models/              # ORM-модели
+    repositories/        # операции над posts и publish_jobs
+    alembic/             # окружение и версии Alembic
+  services/
+    submission_service.py # сохранение поста и publish_jobs одной транзакцией
+    dispatch_service.py   # отправка идентификаторов заданий в Celery
+  worker/
+    celery_app.py         # конфигурация Celery и Redis broker
+    tasks.py              # claim, публикация, ретраи и crash-recovery
   publishers/
     base.py               # Protocol Publisher
     telegram_publisher.py
@@ -43,10 +52,7 @@ app/
     instagram_publisher.py
     tiktok_publisher.py
     fakes.py               # фейковые клиенты для тестов
-  migrations/
-    0001_init.sql
-    0002_....sql
-main.py                    # точка входа: бот + воркер в одном asyncio-луп
+main.py                    # точка входа Telegram UI
 tests/
 config.yaml
 .env.example
@@ -55,7 +61,7 @@ pyproject.toml
 
 ## Схема БД (SQLite)
 
-Миграции — версионированные `.sql`-файлы в `app/migrations/`, применяются по имени файла (`NNNN_description.sql`) через таблицу `schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT)`. Каждый файл — одна атомарная транзакция. Правки только новым файлом, существующие не редактируются.
+Миграции ведутся через Alembic в `app/database/alembic/versions/`. Alembic хранит текущую ревизию в таблице `alembic_version`. Сгенерированную миграцию нужно проверить до применения. Применённые ревизии не редактируются, изменения схемы оформляются новой ревизией.
 
 ```sql
 CREATE TABLE posts (
@@ -95,11 +101,11 @@ CREATE INDEX idx_publish_jobs_status ON publish_jobs(status);
 
 ## Контракты очереди
 
-Очередь — таблица `publish_jobs`, без внешнего брокера. Воркер (`app/queue/worker.py`) поллит `status = 'pending'` с интервалом (конфигурируемым, дефолт 5с), берёт джоб, ставит `in_progress`, вызывает `Publisher.publish`, по результату — `done` или `failed` (+`last_error`, `attempts += 1`).
+Таблица `publish_jobs` — источник истины о состоянии публикации, а Redis передаёт Celery только `job_id`. После сохранения поста бот отправляет `worker.publish_job(job_id)`. Worker атомарно переводит только `pending`-задание в `in_progress`, вызывает `Publisher.publish`, затем фиксирует `done`, снова `pending` для ретрая или `failed` (+ `last_error`, `attempts`). Если Redis временно недоступен, задание остаётся в SQLite и будет отправлено при следующем запуске worker.
 
-Ретраи: до 3 попыток с экспоненциальным бэкоффом (10с, 60с, 300с) через поле `updated_at` + проверку `attempts < 3` в выборке. После 3 неудач — `status = 'failed'`, дальше не трогается автоматически.
+Ретраи: до 3 попыток с задержками 10 и 60 секунд через Celery countdown. После третьей неудачи — `status = 'failed'`, дальше задание не трогается автоматически.
 
-Идемпотентность хендлера: `Publisher.publish(post, target)` при повторном вызове с тем же `post.id` и `target` не создаёт дубль поста на площадке. Для площадок без встроенной идемпотентности (WhatsApp/Instagram/TikTok API не дают idempotency key) это обеспечивается на уровне БД: джоб переходит в `in_progress` до вызова паблишера, повторный вызов воркера на тот же джоб невозможен, пока джоб не освобождён (crash-recovery — джобы, застрявшие в `in_progress` дольше таймаута, переводятся обратно в `pending` при старте воркера).
+Повторная доставка Celery безопасна на уровне локального состояния: условный `UPDATE ... WHERE status = 'pending'` позволяет только одному worker захватить задание. Задания, застрявшие в `in_progress` дольше 15 минут, возвращаются в `pending` при старте worker. Абсолютную защиту от дубля на внешней площадке это не гарантирует: падение процесса после успешной сетевой публикации, но до `done` требует idempotency key самой площадки либо последующей сверки по `external_id`.
 
 ## Контракт `Publisher`
 
@@ -161,6 +167,9 @@ tiktok:
 `.env.example` — секреты (токены, креды провайдеров), не в `config.yaml`:
 ```
 TELEGRAM_BOT_TOKEN=
+TELEGRAM_OWNER_ID=
+CELERY_BROKER_URL=redis://localhost:6379/0
+DATABASE_URL=
 WHATSAPP_API_KEY=
 INSTAGRAM_USERNAME=
 INSTAGRAM_PASSWORD=

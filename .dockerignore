@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+.env
+.pytest_cache
+.pytest_*
+.ruff_cache
+__pycache__
+*.py[cod]
+data
+media
+tests
+deps.txt
+tech.md

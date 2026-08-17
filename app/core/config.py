@@ -34,7 +34,7 @@ def load_config(
     config_path: str | Path = "config.yaml",
     env_path: str | Path = ".env",
 ) -> AppConfig:
-    _load_env_file(Path(env_path))
+    load_environment(env_path)
     raw = _read_yaml(Path(config_path))
     targets = tuple(_parse_targets(raw))
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -146,7 +146,9 @@ def _optional_bool(parent: dict[str, Any], key: str, location: str) -> bool:
     return value
 
 
-def _load_env_file(path: Path) -> None:
+def load_environment(env_path: str | Path = ".env") -> None:
+    """Load missing environment variables from a local dotenv-style file."""
+    path = Path(env_path)
     if not path.exists():
         return
     try:

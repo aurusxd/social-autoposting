@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from html import escape
+from pathlib import Path
 from typing import Any
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import AiogramError, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from loguru import logger
 
 from app.bot.keyboards import (
     DraftAction,
@@ -21,12 +24,16 @@ from app.bot.models import DraftMedia, PostDraft, toggle_index
 from app.bot.states import BotFlow
 from app.bot.views import draft_text, review_text, targets_text, welcome_text
 from app.core.config import AppConfig
+from app.services.dispatch_service import dispatch_jobs
+from app.services.media_storage import delete_draft_media, download_telegram_media
+from app.services.submission_service import SubmissionError, save_submission
 
 router = Router(name="telegram-ui")
 
 
 @router.message(Command("start", "new"))
 async def start_draft(message: Message, state: FSMContext) -> None:
+    await _delete_current_draft_media(state)
     await state.clear()
     await state.set_state(BotFlow.collecting)
     await message.answer(welcome_text())
@@ -34,6 +41,7 @@ async def start_draft(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("cancel"))
 async def cancel_draft(message: Message, state: FSMContext) -> None:
+    await _delete_current_draft_media(state)
     await state.clear()
     await message.answer("Черновик удалён. Отправьте /new, чтобы начать заново.")
 
@@ -50,17 +58,37 @@ async def collect_content(message: Message, state: FSMContext) -> None:
     draft = PostDraft.from_dict(data.get("draft"))
 
     if message.photo:
-        try:
-            draft = draft.append_media(DraftMedia(message.photo[-1].file_id, "photo"))
-        except ValueError:
+        if len(draft.media) >= 10:
             await message.answer("В одном посте можно добавить не больше 10 файлов.")
+            return
+        try:
+            photo = message.photo[-1]
+            file_path = await download_telegram_media(
+                message.bot,
+                photo.file_id,
+                ".jpg",
+            )
+            draft = draft.append_media(DraftMedia(photo.file_id, "photo", file_path))
+        except (AiogramError, OSError) as error:
+            await message.answer(f"Не удалось сохранить фото: {escape(str(error))}")
             return
         draft = draft.append_caption(message.caption)
     elif message.video:
-        try:
-            draft = draft.append_media(DraftMedia(message.video.file_id, "video"))
-        except ValueError:
+        if len(draft.media) >= 10:
             await message.answer("В одном посте можно добавить не больше 10 файлов.")
+            return
+        try:
+            suffix = Path(message.video.file_name or "video.mp4").suffix or ".mp4"
+            file_path = await download_telegram_media(
+                message.bot,
+                message.video.file_id,
+                suffix,
+            )
+            draft = draft.append_media(
+                DraftMedia(message.video.file_id, "video", file_path)
+            )
+        except (AiogramError, OSError) as error:
+            await message.answer(f"Не удалось сохранить видео: {escape(str(error))}")
             return
         draft = draft.append_caption(message.caption)
     elif message.text and not message.text.startswith("/"):
@@ -105,6 +133,7 @@ async def open_targets(
 
 @router.callback_query(DraftAction.filter(F.action == "discard"))
 async def discard_draft(callback: CallbackQuery, state: FSMContext) -> None:
+    await _delete_current_draft_media(state)
     await state.clear()
     await _edit_callback_message(
         callback, "Черновик удалён. Отправьте /new, чтобы начать заново."
@@ -186,6 +215,7 @@ async def back_to_targets(
 
 @router.callback_query(ReviewAction.filter(F.action == "cancel"))
 async def cancel_from_button(callback: CallbackQuery, state: FSMContext) -> None:
+    await _delete_current_draft_media(state)
     await state.clear()
     await _edit_callback_message(
         callback, "Действие отменено, черновик удалён. Отправьте /new для нового поста."
@@ -204,15 +234,47 @@ async def submit_draft(
     if not selected:
         await callback.answer("Выберите хотя бы одну площадку", show_alert=True)
         return
+    try:
+        targets = tuple(app_config.targets[index] for index in sorted(selected))
+    except IndexError:
+        await callback.answer(
+            "Список площадок изменился. Выберите цели заново.",
+            show_alert=True,
+        )
+        return
+
+    draft = PostDraft.from_dict(data.get("draft"))
+    try:
+        submission = save_submission(draft, targets)
+    except SubmissionError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+    except Exception:
+        logger.exception("Failed to persist post submission")
+        await callback.answer(
+            "Не удалось сохранить пост. Попробуйте ещё раз.",
+            show_alert=True,
+        )
+        return
+
+    dispatch_result = await asyncio.to_thread(dispatch_jobs, submission.job_ids)
+
     names = "\n".join(
         f"• {escape(app_config.targets[index].name)}" for index in sorted(selected)
+    )
+    dispatch_text = (
+        "Задания переданы Celery worker."
+        if not dispatch_result.failed
+        else "Часть заданий сохранена локально: Redis сейчас недоступен."
     )
     await state.clear()
     await _edit_callback_message(
         callback,
-        "<b>Пост подготовлен</b>\n\n"
+        "<b>Пост сохранён</b>\n\n"
+        f"Номер поста: <code>{submission.post_id}</code>\n"
+        f"Заданий создано: <b>{len(submission.job_ids)}</b>\n\n"
         f"Выбранные площадки:\n{names}\n\n"
-        "UI-сценарий завершён. Очередь публикации подключается следующим этапом.",
+        f"{dispatch_text}",
     )
     await callback.answer("Готово")
 
@@ -255,3 +317,8 @@ async def _edit_callback_message(
 
 def _selected_from_data(data: dict[str, Any]) -> set[int]:
     return {int(index) for index in data.get("selected", [])}
+
+
+async def _delete_current_draft_media(state: FSMContext) -> None:
+    data = await state.get_data()
+    delete_draft_media(PostDraft.from_dict(data.get("draft")))

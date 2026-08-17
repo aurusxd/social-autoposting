@@ -1,0 +1,18 @@
+telegram:
+  channels:
+    - id: "-1001234567890"
+      name: "Основной канал"
+
+whatsapp:
+  groups:
+    - jid: "1234567890-123456@g.us"
+      name: "Группа клиентов"
+  channels:
+    - jid: "1234567890@newsletter"
+      name: "WA-канал"
+
+instagram:
+  enabled: true
+
+tiktok:
+  enabled: true

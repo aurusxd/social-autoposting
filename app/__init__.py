@@ -1,0 +1,1 @@
+"""Social autoposting bot package."""

@@ -73,3 +73,24 @@ def test_instagram_story_rejects_multiple_media() -> None:
 
     with pytest.raises(SubmissionError, match="ровно один"):
         save_submission(draft, targets)
+
+
+def test_tiktok_rejects_text_only_submission() -> None:
+    draft = PostDraft(caption="Только текст")
+    targets = (PublishTarget("tiktok", "self", "feed", "TikTok"),)
+
+    with pytest.raises(SubmissionError, match="фото или видео"):
+        save_submission(draft, targets)
+
+
+def test_tiktok_rejects_mixed_media() -> None:
+    draft = PostDraft(
+        media=(
+            DraftMedia("photo", "photo", "media/photo.jpg"),
+            DraftMedia("video", "video", "media/video.mp4"),
+        )
+    )
+    targets = (PublishTarget("tiktok", "self", "feed", "TikTok"),)
+
+    with pytest.raises(SubmissionError, match="смешивание"):
+        save_submission(draft, targets)

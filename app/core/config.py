@@ -34,11 +34,21 @@ class InstagramConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TikTokConfig:
+    api_key: str
+    account_id: str
+    api_base_url: str
+    request_timeout: int
+    privacy_level: str
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     bot_token: str
     owner_id: int
     targets: tuple[PublishTarget, ...]
     instagram: InstagramConfig | None
+    tiktok: TikTokConfig | None
 
 
 def load_config(
@@ -63,11 +73,13 @@ def load_config(
         raise ConfigError("TELEGRAM_OWNER_ID must be a positive integer")
 
     instagram = _instagram_config(raw)
+    tiktok = _tiktok_config(raw)
     return AppConfig(
         bot_token=token,
         owner_id=owner_id,
         targets=targets,
         instagram=instagram,
+        tiktok=tiktok,
     )
 
 
@@ -194,10 +206,54 @@ def _instagram_config(raw: dict[str, Any]) -> InstagramConfig | None:
     )
 
 
-def _required_environment(key: str) -> str:
+def _tiktok_config(raw: dict[str, Any]) -> TikTokConfig | None:
+    tiktok = _optional_mapping(raw, "tiktok")
+    if not _optional_bool(tiktok, "enabled", "tiktok"):
+        return None
+
+    api_key = _required_environment("ZERNIO_API_KEY", "TikTok")
+    account_id = _required_environment("ZERNIO_TIKTOK_ACCOUNT_ID", "TikTok")
+    api_base_url = (
+        os.getenv("ZERNIO_API_BASE_URL", "https://zernio.com/api").strip().rstrip("/")
+        or "https://zernio.com/api"
+    )
+    timeout_raw = os.getenv("ZERNIO_REQUEST_TIMEOUT", "120").strip()
+    try:
+        request_timeout = int(timeout_raw)
+    except ValueError as error:
+        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be an integer") from error
+    if request_timeout <= 0:
+        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be positive")
+
+    privacy_level = os.getenv(
+        "ZERNIO_TIKTOK_PRIVACY_LEVEL",
+        "PUBLIC_TO_EVERYONE",
+    ).strip()
+    allowed_privacy_levels = {
+        "PUBLIC_TO_EVERYONE",
+        "MUTUAL_FOLLOW_FRIENDS",
+        "FOLLOWER_OF_CREATOR",
+        "SELF_ONLY",
+    }
+    if privacy_level not in allowed_privacy_levels:
+        raise ConfigError(
+            "ZERNIO_TIKTOK_PRIVACY_LEVEL must be one of: "
+            + ", ".join(sorted(allowed_privacy_levels))
+        )
+
+    return TikTokConfig(
+        api_key=api_key,
+        account_id=account_id,
+        api_base_url=api_base_url,
+        request_timeout=request_timeout,
+        privacy_level=privacy_level,
+    )
+
+
+def _required_environment(key: str, integration: str = "Instagram") -> str:
     value = os.getenv(key, "").strip()
     if not value:
-        raise ConfigError(f"{key} is required when Instagram is enabled")
+        raise ConfigError(f"{key} is required when {integration} is enabled")
     return value
 
 

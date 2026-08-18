@@ -1,4 +1,4 @@
-# tech.md — Cross-posting Bot
+  # tech.md — Cross-posting Bot
 
 v1 — initial version.
 

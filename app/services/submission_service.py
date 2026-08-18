@@ -41,6 +41,8 @@ def save_submission(
         and len(draft.media) != 1
     ):
         raise SubmissionError("Для Instagram Story выберите ровно один файл")
+    if any(target.platform == "tiktok" for target in targets):
+        _validate_tiktok_draft(draft)
 
     with session_factory.begin() as session:
         post = Post(
@@ -77,3 +79,18 @@ def save_submission(
             post_id=post.id,
             job_ids=tuple(job.id for job in jobs),
         )
+
+
+def _validate_tiktok_draft(draft: PostDraft) -> None:
+    if not draft.media:
+        raise SubmissionError("Для TikTok нужно добавить фото или видео")
+
+    media_types = {media.media_type for media in draft.media}
+    if len(media_types) > 1:
+        raise SubmissionError("TikTok не поддерживает смешивание фото и видео")
+    if "video" in media_types and len(draft.media) != 1:
+        raise SubmissionError("Для TikTok выберите ровно одно видео")
+
+    caption_limit = 2200 if "video" in media_types else 4000
+    if len(draft.caption) > caption_limit:
+        raise SubmissionError(f"Подпись TikTok превышает {caption_limit} символов")

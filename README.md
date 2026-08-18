@@ -2,16 +2,17 @@
 
 Telegram-бот принимает текст, фото и видео, сохраняет пост в SQLite и создаёт
 задания публикации. Celery worker получает задания через Redis и публикует их в
-Telegram-каналы и Instagram. Для WhatsApp и TikTok пока есть только цели в UI:
-соответствующие паблишеры ещё не реализованы.
+Telegram-каналы, Instagram и TikTok. Для WhatsApp пока есть только цели в UI:
+соответствующий паблишер ещё не реализован.
 
 ## Подготовка
 
 1. Установите Python 3.12+ и зависимости:
    `python -m pip install -e ".[dev]"`.
 2. Скопируйте `.env.example` в `.env`.
-3. Заполните `TELEGRAM_BOT_TOKEN` и `TELEGRAM_OWNER_ID`. Если Instagram включён
-   в `config.yaml`, также заполните `INSTAGRAM_USERNAME` и `INSTAGRAM_PASSWORD`.
+3. Заполните `TELEGRAM_BOT_TOKEN` и `TELEGRAM_OWNER_ID`. Для включённых в
+   `config.yaml` Instagram и TikTok также заполните переменные соответствующих
+   интеграций из разделов ниже.
 4. Укажите Telegram-каналы в `config.yaml` и добавьте бота в них как
    администратора с правом публикации.
 5. Примените миграции: `alembic upgrade head`.
@@ -71,6 +72,32 @@ INSTAGRAM_REQUEST_TIMEOUT=30
 потребовать подтверждения в официальном приложении, а слишком частые действия
 могут вызвать временное ограничение или блокировку аккаунта. При ответе о
 лимите Celery ждёт 15 минут перед следующей попыткой.
+
+## TikTok через Zernio
+
+TikTok публикуется через официальный Content Posting API, который предоставляет
+Zernio. Собственный TikTok Developer App, сайт и домен не нужны. Подключите
+TikTok-аккаунт в Zernio и добавьте в `.env`:
+
+```dotenv
+ZERNIO_API_KEY=
+ZERNIO_TIKTOK_ACCOUNT_ID=
+ZERNIO_API_BASE_URL=https://zernio.com/api
+ZERNIO_REQUEST_TIMEOUT=120
+ZERNIO_TIKTOK_PRIVACY_LEVEL=PUBLIC_TO_EVERYONE
+```
+
+`ZERNIO_TIKTOK_ACCOUNT_ID` — поле `_id` TikTok-аккаунта из ответа
+`GET https://zernio.com/api/v1/accounts?platform=tiktok&status=connected`.
+Поддерживаются одно видео MP4/MOV/WebM или фотокарусель JPG/PNG/WebP. Фото и
+видео в одной публикации смешивать нельзя. Перед публикацией worker получает
+временную ссылку Zernio, загружает туда локальные файлы и передаёт полученные
+URL в задачу TikTok. Для повторов используется стабильный `x-request-id`, чтобы
+сетевой сбой не создавал дубли.
+
+По умолчанию публикация публичная. Если аккаунт не разрешает публичный уровень,
+укажите в `ZERNIO_TIKTOK_PRIVACY_LEVEL` одно из значений, которое доступно ему:
+`MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR` или `SELF_ONLY`.
 
 ## Проверка Celery
 

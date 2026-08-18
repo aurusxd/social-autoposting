@@ -11,6 +11,8 @@ def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_OWNER_ID", "12345")
     monkeypatch.setenv("INSTAGRAM_USERNAME", "instagram-user")
     monkeypatch.setenv("INSTAGRAM_PASSWORD", "instagram-password")
+    monkeypatch.setenv("ZERNIO_API_KEY", "zernio-key")
+    monkeypatch.setenv("ZERNIO_TIKTOK_ACCOUNT_ID", "tiktok-account")
 
 
 def _write(path: Path, content: str) -> Path:
@@ -49,6 +51,10 @@ tiktok:
     assert config.instagram.username == "instagram-user"
     assert config.instagram.session_path == Path("data/instagram_session.json")
     assert config.instagram.request_timeout == 30
+    assert config.tiktok is not None
+    assert config.tiktok.api_key == "zernio-key"
+    assert config.tiktok.account_id == "tiktok-account"
+    assert config.tiktok.privacy_level == "PUBLIC_TO_EVERYONE"
 
 
 def test_missing_target_name_fails_at_startup(tmp_path: Path) -> None:
@@ -100,4 +106,26 @@ def test_instagram_credentials_are_required_when_enabled(
     monkeypatch.delenv("INSTAGRAM_USERNAME")
 
     with pytest.raises(ConfigError, match="INSTAGRAM_USERNAME"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_zernio_credentials_are_required_when_tiktok_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "tiktok:\n  enabled: true\n")
+    monkeypatch.delenv("ZERNIO_API_KEY")
+
+    with pytest.raises(ConfigError, match="ZERNIO_API_KEY"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_invalid_tiktok_privacy_level_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "tiktok:\n  enabled: true\n")
+    monkeypatch.setenv("ZERNIO_TIKTOK_PRIVACY_LEVEL", "EVERYONE")
+
+    with pytest.raises(ConfigError, match="ZERNIO_TIKTOK_PRIVACY_LEVEL"):
         load_config(config_path, tmp_path / ".env")

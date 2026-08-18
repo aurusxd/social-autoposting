@@ -42,12 +42,10 @@ def test_publisher_factory_registers_enabled_instagram() -> None:
         telegram_api=_telegram_api(),
         targets=(),
         instagram=InstagramConfig(
-            username="instagram-user",
-            password="instagram-password",
-            totp_secret=None,
-            session_path=Path("data/instagram-session.json"),
-            proxy=None,
-            request_timeout=30,
+            api_key="zernio-key",
+            account_id="instagram-account",
+            api_base_url="https://zernio.example/api",
+            request_timeout=90,
         ),
         tiktok=None,
     )
@@ -55,6 +53,7 @@ def test_publisher_factory_registers_enabled_instagram() -> None:
     publishers = build_publishers(config)
 
     assert isinstance(publishers["instagram"], InstagramPublisher)
+    assert publishers["instagram"].account_id == "instagram-account"
 
 
 def test_publisher_factory_registers_enabled_tiktok() -> None:

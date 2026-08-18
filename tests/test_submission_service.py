@@ -75,6 +75,29 @@ def test_instagram_story_rejects_multiple_media() -> None:
         save_submission(draft, targets)
 
 
+def test_instagram_feed_rejects_more_than_ten_media() -> None:
+    draft = PostDraft(
+        media=tuple(
+            DraftMedia(str(index), "photo", f"media/{index}.jpg") for index in range(11)
+        )
+    )
+    targets = (PublishTarget("instagram", "self", "feed", "Лента"),)
+
+    with pytest.raises(SubmissionError, match="не более 10"):
+        save_submission(draft, targets)
+
+
+def test_instagram_rejects_too_long_caption() -> None:
+    draft = PostDraft(
+        caption="a" * 2201,
+        media=(DraftMedia("photo", "photo", "media/photo.jpg"),),
+    )
+    targets = (PublishTarget("instagram", "self", "feed", "Лента"),)
+
+    with pytest.raises(SubmissionError, match="2200"):
+        save_submission(draft, targets)
+
+
 def test_tiktok_rejects_text_only_submission() -> None:
     draft = PostDraft(caption="Только текст")
     targets = (PublishTarget("tiktok", "self", "feed", "TikTok"),)

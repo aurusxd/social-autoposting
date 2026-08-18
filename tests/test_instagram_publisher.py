@@ -1,104 +1,90 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from instagrapi.exceptions import (
-    BadPassword,
-    ClientConnectionError,
-    PleaseWaitFewMinutes,
-)
+import aiohttp
 
 from app.publishers import MediaFile, Post, PublishTarget
 from app.publishers.instagram_publisher import InstagramPublisher
 
 
-@dataclass
-class UploadedMedia:
-    id: str
-
-
-class FakeInstagramClient:
-    def __init__(self, upload_error: Exception | None = None) -> None:
-        self.upload_error = upload_error
-        self.calls: list[tuple[Any, ...]] = []
-        self.request_timeout = 0
-
-    def set_proxy(self, proxy: str) -> None:
-        self.calls.append(("set_proxy", proxy))
-
-    def load_settings(self, path: Path) -> dict[str, Any]:
-        self.calls.append(("load_settings", path))
-        return {"uuids": {"uuid": "stable-device"}}
-
-    def set_settings(self, settings: dict[str, Any]) -> bool:
-        self.calls.append(("set_settings", settings))
-        return True
-
-    def totp_generate_code(self, seed: str) -> str:
-        self.calls.append(("totp_generate_code", seed))
-        return "123456"
-
-    def login(
+class FakeResponse:
+    def __init__(
         self,
-        username: str,
-        password: str,
-        verification_code: str = "",
-    ) -> bool:
-        self.calls.append(("login", username, password, verification_code))
-        return True
+        status: int,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        text: str = "",
+    ) -> None:
+        self.status = status
+        self.payload = payload
+        self.headers = headers or {}
+        self._text = text
 
-    def dump_settings(self, path: Path) -> bool:
-        self.calls.append(("dump_settings", path))
-        path.write_text("{}", encoding="utf-8")
-        return True
+    async def json(self, **_: Any) -> dict[str, Any] | None:
+        return self.payload
 
-    def photo_upload(self, path: Path, caption: str) -> UploadedMedia:
-        return self._upload("photo_upload", path, caption)
+    async def read(self) -> bytes:
+        return self._text.encode()
 
-    def video_upload(self, path: Path, caption: str) -> UploadedMedia:
-        return self._upload("video_upload", path, caption)
+    async def text(self) -> str:
+        return self._text
 
-    def album_upload(self, paths: list[Path], caption: str) -> UploadedMedia:
-        return self._upload("album_upload", paths, caption)
+    def release(self) -> None:
+        return None
 
-    def photo_upload_to_story(
+
+class FakeSession:
+    def __init__(self, create_response: FakeResponse | None = None) -> None:
+        self.create_response = create_response or FakeResponse(
+            201,
+            {"post": {"_id": "instagram-post-id"}},
+        )
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def __aenter__(self) -> FakeSession:
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+    async def request(
         self,
-        path: Path,
-        caption: str,
+        method: str,
+        url: str,
         **kwargs: Any,
-    ) -> UploadedMedia:
-        return self._upload("photo_story", path, caption, kwargs)
+    ) -> FakeResponse:
+        self.calls.append((method, url, kwargs))
+        if url.endswith("/v1/media/presign"):
+            filename = kwargs["json"]["filename"]
+            return FakeResponse(
+                200,
+                {
+                    "uploadUrl": f"https://storage.example/{filename}",
+                    "publicUrl": f"https://media.example/{filename}",
+                },
+            )
+        return self.create_response
 
-    def video_upload_to_story(
-        self,
-        path: Path,
-        caption: str,
-        **kwargs: Any,
-    ) -> UploadedMedia:
-        return self._upload("video_story", path, caption, kwargs)
-
-    def _upload(self, *call: Any) -> UploadedMedia:
-        self.calls.append(call)
-        if self.upload_error is not None:
-            raise self.upload_error
-        return UploadedMedia("instagram-media-id")
+    async def put(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append(("PUT", url, kwargs))
+        kwargs["data"].read()
+        return FakeResponse(200)
 
 
-def _publisher(
-    client: FakeInstagramClient,
-    session_path: Path,
-) -> InstagramPublisher:
+def _publisher(session: FakeSession) -> InstagramPublisher:
+    def session_factory(**kwargs: Any) -> FakeSession:
+        assert isinstance(kwargs["timeout"], aiohttp.ClientTimeout)
+        return session
+
     return InstagramPublisher(
-        username="user",
-        password="password",
-        totp_secret="totp-secret",
-        session_path=session_path,
-        proxy="http://proxy:8080",
-        request_timeout=45,
-        client_factory=lambda: client,
+        api_key="secret-key",
+        account_id="instagram-account",
+        api_base_url="https://zernio.example/api",
+        request_timeout=90,
+        session_factory=session_factory,
     )
 
 
@@ -107,109 +93,105 @@ def _media(path: Path, media_type: str, position: int = 0) -> MediaFile:
     return MediaFile(str(path), media_type, position=position)
 
 
-def test_feed_album_uploads_media_in_position_order(tmp_path: Path) -> None:
-    client = FakeInstagramClient()
-    session_path = tmp_path / "instagram-session.json"
-    session_path.write_text("{}", encoding="utf-8")
+def _publish(session: FakeSession, post: Post, target_kind: str):
+    return asyncio.run(
+        _publisher(session).publish(
+            post,
+            PublishTarget("self", target_kind, "Instagram"),
+        )
+    )
+
+
+def test_feed_carousel_is_uploaded_in_position_order(tmp_path: Path) -> None:
+    session = FakeSession()
     second = _media(tmp_path / "second.mp4", "video", position=1)
     first = _media(tmp_path / "first.jpg", "photo", position=0)
-    post = Post(id=1, caption="Подпись", media_files=(second, first))
 
-    result = asyncio.run(
-        _publisher(client, session_path).publish(
-            post,
-            PublishTarget("self", "feed", "Лента"),
-        )
+    result = _publish(
+        session,
+        Post(id=1, caption="Подпись", media_files=(second, first)),
+        "feed",
     )
 
-    album_call = next(call for call in client.calls if call[0] == "album_upload")
-    assert album_call[1] == [tmp_path / "first.jpg", tmp_path / "second.mp4"]
+    payload = session.calls[-1][2]["json"]
     assert result.success
-    assert result.external_id == "instagram-media-id"
-    assert client.request_timeout == 45
-    assert ("set_proxy", "http://proxy:8080") in client.calls
-    assert ("totp_generate_code", "totp-secret") in client.calls
-    assert ("login", "user", "password", "123456") in client.calls
-    assert any(call[0] == "load_settings" for call in client.calls)
-    assert session_path.exists()
+    assert result.external_id == "instagram-post-id"
+    assert payload["content"] == "Подпись"
+    assert payload["publishNow"] is True
+    assert payload["mediaItems"] == [
+        {"url": "https://media.example/first.jpg", "type": "image"},
+        {"url": "https://media.example/second.mp4", "type": "video"},
+    ]
+    assert payload["platforms"] == [
+        {"platform": "instagram", "accountId": "instagram-account"}
+    ]
+    assert session.calls[-1][2]["headers"]["x-request-id"]
 
 
-def test_photo_story_uses_fit_resize_mode(tmp_path: Path) -> None:
-    client = FakeInstagramClient()
-    photo = _media(tmp_path / "story.jpg", "photo")
+def test_story_uses_story_content_type_and_omits_caption(tmp_path: Path) -> None:
+    session = FakeSession()
+    photo = _media(tmp_path / "story.png", "photo")
 
-    result = asyncio.run(
-        _publisher(client, tmp_path / "session.json").publish(
-            Post(id=1, caption="Story", media_files=(photo,)),
-            PublishTarget("self", "story", "История"),
-        )
+    result = _publish(
+        session,
+        Post(id=2, caption="Story caption", media_files=(photo,)),
+        "story",
     )
 
-    story_call = next(call for call in client.calls if call[0] == "photo_story")
-    assert story_call[3] == {"resize_mode": "fit"}
+    payload = session.calls[-1][2]["json"]
     assert result.success
+    assert "content" not in payload
+    assert payload["platforms"][0]["platformSpecificData"] == {"contentType": "story"}
 
 
-def test_connection_error_is_retryable(tmp_path: Path) -> None:
-    client = FakeInstagramClient(ClientConnectionError("offline"))
+def test_single_feed_video_is_shared_as_reel(tmp_path: Path) -> None:
+    session = FakeSession()
+    video = _media(tmp_path / "reel.mov", "video")
+
+    result = _publish(
+        session,
+        Post(id=3, caption="Reel", media_files=(video,)),
+        "feed",
+    )
+
+    assert result.success
+    payload = session.calls[-1][2]["json"]
+    assert payload["platforms"][0]["platformSpecificData"] == {"shareToFeed": True}
+
+
+def test_rate_limit_is_retryable_and_uses_retry_after(tmp_path: Path) -> None:
+    session = FakeSession(
+        FakeResponse(
+            429,
+            {"error": "rate limit"},
+            headers={"Retry-After": "75"},
+        )
+    )
     photo = _media(tmp_path / "photo.jpg", "photo")
 
-    result = asyncio.run(
-        _publisher(client, tmp_path / "session.json").publish(
-            Post(id=1, caption=None, media_files=(photo,)),
-            PublishTarget("self", "feed", "Лента"),
-        )
+    result = _publish(
+        session,
+        Post(id=4, caption=None, media_files=(photo,)),
+        "feed",
     )
 
     assert not result.success
     assert result.retryable
-    assert "ClientConnectionError" in (result.error or "")
+    assert result.retry_after == 75
+    assert "rate limit" in (result.error or "")
 
 
-def test_bad_password_is_not_retryable(tmp_path: Path) -> None:
-    client = FakeInstagramClient(BadPassword("invalid password"))
-    photo = _media(tmp_path / "photo.jpg", "photo")
-
-    result = asyncio.run(
-        _publisher(client, tmp_path / "session.json").publish(
-            Post(id=1, caption=None, media_files=(photo,)),
-            PublishTarget("self", "feed", "Лента"),
-        )
-    )
-
-    assert not result.success
-    assert not result.retryable
-    assert "BadPassword" in (result.error or "")
-
-
-def test_rate_limit_uses_long_retry_delay(tmp_path: Path) -> None:
-    client = FakeInstagramClient(PleaseWaitFewMinutes("slow down"))
-    photo = _media(tmp_path / "photo.jpg", "photo")
-
-    result = asyncio.run(
-        _publisher(client, tmp_path / "session.json").publish(
-            Post(id=1, caption=None, media_files=(photo,)),
-            PublishTarget("self", "feed", "Лента"),
-        )
-    )
-
-    assert not result.success
-    assert result.retryable
-    assert result.retry_after == 15 * 60
-
-
-def test_story_with_multiple_files_is_rejected_before_login(tmp_path: Path) -> None:
-    client = FakeInstagramClient()
+def test_story_with_multiple_files_is_rejected_before_http(tmp_path: Path) -> None:
+    session = FakeSession()
     first = _media(tmp_path / "first.jpg", "photo")
     second = _media(tmp_path / "second.jpg", "photo", position=1)
 
-    result = asyncio.run(
-        _publisher(client, tmp_path / "session.json").publish(
-            Post(id=1, caption=None, media_files=(first, second)),
-            PublishTarget("self", "story", "История"),
-        )
+    result = _publish(
+        session,
+        Post(id=5, caption=None, media_files=(first, second)),
+        "story",
     )
 
     assert not result.success
     assert not result.retryable
-    assert client.calls == []
+    assert session.calls == []

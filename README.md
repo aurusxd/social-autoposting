@@ -37,41 +37,35 @@ Telegram-каналы, Instagram и TikTok. Для WhatsApp пока есть т
 
 Команды бота: `/start`, `/new`, `/cancel`.
 
-## Instagram
+## Instagram через Zernio
 
-Публикатор поддерживает:
+Instagram публикуется через официальный API, который предоставляет Zernio.
+Подключите в Zernio профессиональный Instagram-аккаунт типа Business или
+Creator. Публикатор поддерживает:
 
-- одиночное JPG-фото или MP4-видео в ленте;
-- карусель из JPG/MP4 в ленте;
-- одну JPG-фотографию или одно MP4-видео в Story.
+- одиночное JPG/PNG-фото в ленте;
+- одиночное MP4/MOV-видео как Reel с показом в ленте;
+- смешанную карусель до 10 фото и видео;
+- одно фото или видео в Story.
 
 Текст без медиа и несколько файлов в одной Story отклоняются до создания
-задания. Максимальная длина подписи — 2200 символов.
+задания. Максимальная длина подписи — 2200 символов. Instagram API не
+показывает подпись в Story, поэтому для этой цели бот её не отправляет.
 
 Настройки в `.env`:
 
 ```dotenv
-INSTAGRAM_USERNAME=
-INSTAGRAM_PASSWORD=
-INSTAGRAM_TOTP_SECRET=
-INSTAGRAM_SESSION_PATH=data/instagram_session.json
-INSTAGRAM_PROXY=
-INSTAGRAM_REQUEST_TIMEOUT=30
+ZERNIO_API_KEY=
+ZERNIO_INSTAGRAM_ACCOUNT_ID=
+ZERNIO_API_BASE_URL=https://zernio.com/api
+ZERNIO_REQUEST_TIMEOUT=120
 ```
 
-После первого успешного входа `instagrapi`-сессия сохраняется в
-`data/instagram_session.json` и используется повторно. В Docker этот файл
-попадает в постоянный volume `app_data`. Не добавляйте файл сессии в Git и не
-копируйте его посторонним.
-
-Если на аккаунте включена двухфакторная аутентификация через приложение,
-укажите её TOTP secret в `INSTAGRAM_TOTP_SECRET`. Оставьте переменную пустой,
-если 2FA не используется.
-
-`instagrapi` использует неофициальный Instagram Private API. Первый вход может
-потребовать подтверждения в официальном приложении, а слишком частые действия
-могут вызвать временное ограничение или блокировку аккаунта. При ответе о
-лимите Celery ждёт 15 минут перед следующей попыткой.
+`ZERNIO_INSTAGRAM_ACCOUNT_ID` — поле `_id` Instagram-аккаунта из ответа
+`GET https://zernio.com/api/v1/accounts?platform=instagram&status=connected`.
+API-ключ и общие настройки Zernio используются совместно с TikTok. Медиа сначала
+загружается по временной ссылке Zernio, затем worker создаёт публикацию со
+стабильным `x-request-id`, чтобы безопасно повторять запрос после сетевого сбоя.
 
 ## TikTok через Zernio
 
@@ -165,7 +159,7 @@ docker compose ps
 
 Compose запускает локальный Telegram Bot API и Redis, применяет
 Alembic-миграции, затем запускает Celery worker и Telegram-бота. Внутренние API
-и Redis не публикуются наружу. SQLite, Instagram-сессия, медиа, данные Redis и
+и Redis не публикуются наружу. SQLite, медиа, данные Redis и
 локального Telegram API сохраняются в именованных volumes и переживают
 пересоздание контейнеров.
 

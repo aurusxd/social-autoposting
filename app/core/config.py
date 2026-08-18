@@ -33,11 +33,9 @@ class TelegramAPIConfig:
 
 @dataclass(frozen=True, slots=True)
 class InstagramConfig:
-    username: str
-    password: str
-    totp_secret: str | None
-    session_path: Path
-    proxy: str | None
+    api_key: str
+    account_id: str
+    api_base_url: str
     request_timeout: int
 
 
@@ -191,28 +189,15 @@ def _instagram_config(raw: dict[str, Any]) -> InstagramConfig | None:
     if not _optional_bool(instagram, "enabled", "instagram"):
         return None
 
-    username = _required_environment("INSTAGRAM_USERNAME")
-    password = _required_environment("INSTAGRAM_PASSWORD")
-    totp_secret = os.getenv("INSTAGRAM_TOTP_SECRET", "").strip() or None
-    session_path = Path(
-        os.getenv("INSTAGRAM_SESSION_PATH", "data/instagram_session.json").strip()
-        or "data/instagram_session.json"
+    api_key, account_id, api_base_url, request_timeout = _zernio_connection(
+        "Instagram",
+        "ZERNIO_INSTAGRAM_ACCOUNT_ID",
     )
-    proxy = os.getenv("INSTAGRAM_PROXY", "").strip() or None
-    timeout_raw = os.getenv("INSTAGRAM_REQUEST_TIMEOUT", "30").strip()
-    try:
-        request_timeout = int(timeout_raw)
-    except ValueError as error:
-        raise ConfigError("INSTAGRAM_REQUEST_TIMEOUT must be an integer") from error
-    if request_timeout <= 0:
-        raise ConfigError("INSTAGRAM_REQUEST_TIMEOUT must be positive")
 
     return InstagramConfig(
-        username=username,
-        password=password,
-        totp_secret=totp_secret,
-        session_path=session_path,
-        proxy=proxy,
+        api_key=api_key,
+        account_id=account_id,
+        api_base_url=api_base_url,
         request_timeout=request_timeout,
     )
 
@@ -255,19 +240,10 @@ def _tiktok_config(raw: dict[str, Any]) -> TikTokConfig | None:
     if not _optional_bool(tiktok, "enabled", "tiktok"):
         return None
 
-    api_key = _required_environment("ZERNIO_API_KEY", "TikTok")
-    account_id = _required_environment("ZERNIO_TIKTOK_ACCOUNT_ID", "TikTok")
-    api_base_url = (
-        os.getenv("ZERNIO_API_BASE_URL", "https://zernio.com/api").strip().rstrip("/")
-        or "https://zernio.com/api"
+    api_key, account_id, api_base_url, request_timeout = _zernio_connection(
+        "TikTok",
+        "ZERNIO_TIKTOK_ACCOUNT_ID",
     )
-    timeout_raw = os.getenv("ZERNIO_REQUEST_TIMEOUT", "120").strip()
-    try:
-        request_timeout = int(timeout_raw)
-    except ValueError as error:
-        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be an integer") from error
-    if request_timeout <= 0:
-        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be positive")
 
     privacy_level = os.getenv(
         "ZERNIO_TIKTOK_PRIVACY_LEVEL",
@@ -292,6 +268,29 @@ def _tiktok_config(raw: dict[str, Any]) -> TikTokConfig | None:
         request_timeout=request_timeout,
         privacy_level=privacy_level,
     )
+
+
+def _zernio_connection(
+    integration: str,
+    account_id_variable: str,
+) -> tuple[str, str, str, int]:
+    api_key = _required_environment("ZERNIO_API_KEY", integration)
+    account_id = _required_environment(account_id_variable, integration)
+    api_base_url = (
+        os.getenv("ZERNIO_API_BASE_URL", "https://zernio.com/api").strip().rstrip("/")
+        or "https://zernio.com/api"
+    )
+    if not api_base_url.startswith(("http://", "https://")):
+        raise ConfigError("ZERNIO_API_BASE_URL must use http:// or https://")
+
+    timeout_raw = os.getenv("ZERNIO_REQUEST_TIMEOUT", "120").strip()
+    try:
+        request_timeout = int(timeout_raw)
+    except ValueError as error:
+        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be an integer") from error
+    if request_timeout <= 0:
+        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be positive")
+    return api_key, account_id, api_base_url, request_timeout
 
 
 def _required_environment(key: str, integration: str = "Instagram") -> str:

@@ -1,25 +1,12 @@
 from __future__ import annotations
 
-import asyncio
-import os
+import mimetypes
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
-from instagrapi import Client
-from instagrapi.exceptions import (
-    ClientConnectionError,
-    ClientError,
-    ClientIncompleteReadError,
-    ClientJSONDecodeError,
-    ClientLoginRequired,
-    ClientRequestTimeout,
-    ClientThrottledError,
-    GenericRequestError,
-    LoginRequired,
-    PleaseWaitFewMinutes,
-    RateLimitError,
-)
+import aiohttp
 from loguru import logger
 
 from app.publishers.base import (
@@ -29,26 +16,23 @@ from app.publishers.base import (
     PublishResult,
     PublishTarget,
 )
+from app.publishers.zernio_client import (
+    RETRYABLE_HTTP_STATUSES,
+    ZernioHTTPError,
+    external_id,
+    request_json,
+    safe_error,
+    upload_media,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 INSTAGRAM_CAPTION_LIMIT = 2200
-SUPPORTED_PHOTO_SUFFIXES = {".jpg", ".jpeg"}
-SUPPORTED_VIDEO_SUFFIXES = {".mp4"}
-INSTAGRAM_RATE_LIMIT_RETRY_SECONDS = 15 * 60
-RATE_LIMIT_EXCEPTIONS = (
-    ClientThrottledError,
-    PleaseWaitFewMinutes,
-    RateLimitError,
-)
-RETRYABLE_EXCEPTIONS = (
-    ClientConnectionError,
-    ClientIncompleteReadError,
-    ClientJSONDecodeError,
-    ClientLoginRequired,
-    ClientRequestTimeout,
-    GenericRequestError,
-    LoginRequired,
-)
+INSTAGRAM_CAROUSEL_LIMIT = 10
+INSTAGRAM_PHOTO_MAX_SIZE = 8 * 1024**2
+INSTAGRAM_VIDEO_MAX_SIZE = 300 * 1024**2
+INSTAGRAM_STORY_VIDEO_MAX_SIZE = 100 * 1024**2
+SUPPORTED_PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png"}
+SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mov"}
 
 
 class InstagramPublisher:
@@ -56,143 +40,126 @@ class InstagramPublisher:
 
     def __init__(
         self,
-        username: str,
-        password: str,
-        totp_secret: str | None = None,
-        session_path: str | Path = "data/instagram_session.json",
-        proxy: str | None = None,
-        request_timeout: int = 30,
-        client_factory: Callable[[], Client] = Client,
+        api_key: str,
+        account_id: str,
+        api_base_url: str = "https://zernio.com/api",
+        request_timeout: int = 120,
+        session_factory: Callable[..., aiohttp.ClientSession] = aiohttp.ClientSession,
     ) -> None:
-        self.username = username
-        self.password = password
-        self.totp_secret = totp_secret
-        self.session_path = _absolute_path(Path(session_path))
-        self.proxy = proxy
+        self.api_key = api_key
+        self.account_id = account_id
+        self.api_base_url = api_base_url.rstrip("/")
         self.request_timeout = request_timeout
-        self.client_factory = client_factory
+        self.session_factory = session_factory
 
     async def publish(self, post: Post, target: PublishTarget) -> PublishResult:
         try:
-            _validate_post(post, target)
-            external_id = await asyncio.to_thread(self._publish_sync, post, target)
-        except RATE_LIMIT_EXCEPTIONS as error:
+            media_files = _validate_post(post, target)
+            timeout = aiohttp.ClientTimeout(total=self.request_timeout)
+            async with self.session_factory(timeout=timeout) as session:
+                media_items = []
+                for media in media_files:
+                    path = _media_path(media)
+                    media_items.append(
+                        await upload_media(
+                            session,
+                            api_key=self.api_key,
+                            api_base_url=self.api_base_url,
+                            media=media,
+                            path=path,
+                            content_type=_content_type(path, media.media_type),
+                        )
+                    )
+                response = await self._create_post(
+                    session,
+                    post,
+                    target,
+                    media_items,
+                )
+            post_id = external_id(response)
+        except ZernioHTTPError as error:
+            return PublishResult(
+                success=False,
+                retryable=error.status in RETRYABLE_HTTP_STATUSES,
+                error=str(error),
+                retry_after=error.retry_after,
+            )
+        except (aiohttp.ClientError, TimeoutError) as error:
             return PublishResult(
                 success=False,
                 retryable=True,
-                error=_safe_error(error),
-                retry_after=INSTAGRAM_RATE_LIMIT_RETRY_SECONDS,
+                error=safe_error(error),
             )
-        except RETRYABLE_EXCEPTIONS as error:
-            return PublishResult(
-                success=False,
-                retryable=True,
-                error=_safe_error(error),
-            )
-        except (ClientError, PublisherError, OSError, ValueError) as error:
+        except (OSError, PublisherError, ValueError) as error:
             return PublishResult(
                 success=False,
                 retryable=False,
-                error=_safe_error(error),
+                error=safe_error(error),
             )
         except Exception as error:
-            logger.exception("Unexpected Instagram publisher error")
+            logger.exception("Unexpected Instagram/Zernio publisher error")
             return PublishResult(
                 success=False,
                 retryable=True,
-                error=_safe_error(error),
+                error=safe_error(error),
             )
 
-        return PublishResult(success=True, external_id=external_id)
+        return PublishResult(success=True, external_id=post_id)
 
-    def _publish_sync(self, post: Post, target: PublishTarget) -> str:
-        client = self._authenticated_client()
-        media_files = _ordered_media(post)
-        paths = [_media_path(media) for media in media_files]
-        caption = post.caption or ""
+    async def _create_post(
+        self,
+        session: aiohttp.ClientSession,
+        post: Post,
+        target: PublishTarget,
+        media_items: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        platform: dict[str, Any] = {
+            "platform": "instagram",
+            "accountId": self.account_id,
+        }
+        if target.kind == "story":
+            platform["platformSpecificData"] = {"contentType": "story"}
+        elif len(media_items) == 1 and media_items[0]["type"] == "video":
+            platform["platformSpecificData"] = {"shareToFeed": True}
 
-        if target.kind == "feed":
-            uploaded = self._publish_feed(client, media_files, paths, caption)
-        else:
-            uploaded = self._publish_story(client, media_files[0], paths[0], caption)
-        return _external_id(uploaded)
+        payload: dict[str, Any] = {
+            "mediaItems": media_items,
+            "platforms": [platform],
+            "publishNow": True,
+        }
+        if target.kind == "feed" and post.caption:
+            payload["content"] = post.caption
 
-    def _authenticated_client(self) -> Client:
-        client = self.client_factory()
-        client.request_timeout = self.request_timeout
-        if self.proxy:
-            client.set_proxy(self.proxy)
-
-        self._load_session(client)
-        verification_code = (
-            client.totp_generate_code(self.totp_secret) if self.totp_secret else ""
-        )
-        if not client.login(
-            self.username,
-            self.password,
-            verification_code=verification_code,
-        ):
-            raise PublisherError("Instagram rejected the login attempt")
-        self._save_session(client)
-        return client
-
-    def _load_session(self, client: Client) -> None:
-        if not self.session_path.exists():
-            return
-        try:
-            settings = client.load_settings(self.session_path)
-            if settings:
-                client.set_settings(settings)
-        except (OSError, ValueError) as error:
-            logger.warning(
-                "Cannot load Instagram session from {}: {}",
-                self.session_path,
-                type(error).__name__,
+        request_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                "social-autoposting:zernio:instagram:"
+                f"{self.account_id}:{post.id}:{target.kind}",
             )
-            client.set_settings({})
-
-    def _save_session(self, client: Client) -> None:
-        self.session_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = self.session_path.with_suffix(
-            f"{self.session_path.suffix}.tmp"
         )
-        client.dump_settings(temporary_path)
-        os.replace(temporary_path, self.session_path)
-        self.session_path.chmod(0o600)
-
-    @staticmethod
-    def _publish_feed(
-        client: Client,
-        media_files: tuple[MediaFile, ...],
-        paths: list[Path],
-        caption: str,
-    ) -> Any:
-        if len(paths) > 1:
-            return client.album_upload(paths, caption)
-        if media_files[0].media_type == "photo":
-            return client.photo_upload(paths[0], caption)
-        return client.video_upload(paths[0], caption)
-
-    @staticmethod
-    def _publish_story(
-        client: Client,
-        media: MediaFile,
-        path: Path,
-        caption: str,
-    ) -> Any:
-        if media.media_type == "photo":
-            return client.photo_upload_to_story(path, caption, resize_mode="fit")
-        return client.video_upload_to_story(path, caption, resize_mode="fit")
+        return await request_json(
+            session,
+            "POST",
+            f"{self.api_base_url}/v1/posts",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "x-request-id": request_id,
+            },
+        )
 
 
-def _validate_post(post: Post, target: PublishTarget) -> None:
-    media_files = _ordered_media(post)
+def _validate_post(post: Post, target: PublishTarget) -> tuple[MediaFile, ...]:
     if target.kind not in {"feed", "story"}:
         raise PublisherError(f"Unsupported Instagram target kind: {target.kind}")
+
+    media_files = tuple(sorted(post.media_files, key=lambda media: media.position))
     if not media_files:
         raise PublisherError("Instagram publication requires photo or video")
     if target.kind == "story" and len(media_files) != 1:
         raise PublisherError("Instagram story requires exactly one media file")
+    if target.kind == "feed" and len(media_files) > INSTAGRAM_CAROUSEL_LIMIT:
+        raise PublisherError("Instagram supports at most 10 carousel items")
     if len(post.caption or "") > INSTAGRAM_CAPTION_LIMIT:
         raise PublisherError(
             f"Instagram caption exceeds {INSTAGRAM_CAPTION_LIMIT} characters"
@@ -202,38 +169,50 @@ def _validate_post(post: Post, target: PublishTarget) -> None:
         path = _media_path(media)
         if not path.is_file():
             raise PublisherError(f"Instagram media file does not exist: {path.name}")
+        size = path.stat().st_size
         suffix = path.suffix.lower()
-        if media.media_type == "photo" and suffix not in SUPPORTED_PHOTO_SUFFIXES:
-            raise PublisherError("Instagram photos must use JPG format")
-        if media.media_type == "video" and suffix not in SUPPORTED_VIDEO_SUFFIXES:
-            raise PublisherError("Instagram videos must use MP4 format")
-        if media.media_type not in {"photo", "video"}:
+        if media.media_type == "photo":
+            if suffix not in SUPPORTED_PHOTO_SUFFIXES:
+                raise PublisherError("Instagram photos must use JPG or PNG format")
+            if size > INSTAGRAM_PHOTO_MAX_SIZE:
+                raise PublisherError("Instagram photos must not exceed 8 MB")
+        elif media.media_type == "video":
+            if suffix not in SUPPORTED_VIDEO_SUFFIXES:
+                raise PublisherError("Instagram videos must use MP4 or MOV format")
+            size_limit = (
+                INSTAGRAM_STORY_VIDEO_MAX_SIZE
+                if target.kind == "story"
+                else INSTAGRAM_VIDEO_MAX_SIZE
+            )
+            if size > size_limit:
+                limit = 100 if target.kind == "story" else 300
+                raise PublisherError(
+                    f"Instagram {target.kind} videos must not exceed {limit} MB"
+                )
+        else:
             raise PublisherError(
                 f"Unsupported Instagram media type: {media.media_type}"
             )
-
-
-def _ordered_media(post: Post) -> tuple[MediaFile, ...]:
-    return tuple(sorted(post.media_files, key=lambda media: media.position))
+    return media_files
 
 
 def _media_path(media: MediaFile) -> Path:
-    return _absolute_path(Path(media.file_path))
-
-
-def _absolute_path(path: Path) -> Path:
+    path = Path(media.file_path)
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
-def _external_id(uploaded: Any) -> str:
-    external_id = getattr(uploaded, "id", None) or getattr(uploaded, "pk", None)
-    if external_id is None and isinstance(uploaded, dict):
-        external_id = uploaded.get("id") or uploaded.get("pk")
-    if external_id is None:
-        raise PublisherError("Instagram upload returned no media identifier")
-    return str(external_id)
-
-
-def _safe_error(error: Exception) -> str:
-    message = str(error).strip()
-    return f"{type(error).__name__}: {message}" if message else type(error).__name__
+def _content_type(path: Path, media_type: str) -> str:
+    known_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+    }
+    guessed = known_types.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0]
+    if guessed is None:
+        raise PublisherError(f"Cannot detect Instagram media type: {path.name}")
+    expected_prefix = "image/" if media_type == "photo" else "video/"
+    if not guessed.startswith(expected_prefix):
+        raise PublisherError(f"Invalid Instagram media type for {path.name}")
+    return guessed

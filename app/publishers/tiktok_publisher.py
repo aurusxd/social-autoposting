@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import mimetypes
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +16,20 @@ from app.publishers.base import (
     PublishResult,
     PublishTarget,
 )
+from app.publishers.zernio_client import (
+    RETRYABLE_HTTP_STATUSES,
+    ZernioHTTPError,
+    upload_media,
+)
+from app.publishers.zernio_client import (
+    external_id as _external_id,
+)
+from app.publishers.zernio_client import (
+    request_json as _request_json,
+)
+from app.publishers.zernio_client import (
+    safe_error as _safe_error,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ZERNIO_MAX_UPLOAD_SIZE = 5 * 1024**3
@@ -26,19 +39,6 @@ TIKTOK_VIDEO_CAPTION_LIMIT = 2200
 TIKTOK_PHOTO_DESCRIPTION_LIMIT = 4000
 SUPPORTED_PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mov", ".webm"}
-RETRYABLE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
-
-
-class ZernioHTTPError(RuntimeError):
-    def __init__(
-        self,
-        status: int,
-        message: str,
-        retry_after: int | None = None,
-    ) -> None:
-        super().__init__(f"Zernio HTTP {status}: {message}")
-        self.status = status
-        self.retry_after = retry_after
 
 
 class TikTokPublisher:
@@ -105,43 +105,14 @@ class TikTokPublisher:
         media: MediaFile,
     ) -> dict[str, str]:
         path = _media_path(media)
-        content_type = _content_type(path, media.media_type)
-        presign = await _request_json(
+        return await upload_media(
             session,
-            "POST",
-            f"{self.api_base_url}/v1/media/presign",
-            json={
-                "filename": path.name,
-                "contentType": content_type,
-                "size": path.stat().st_size,
-            },
-            headers={"Authorization": f"Bearer {self.api_key}"},
+            api_key=self.api_key,
+            api_base_url=self.api_base_url,
+            media=media,
+            path=path,
+            content_type=_content_type(path, media.media_type),
         )
-        upload_url = _required_response_string(presign, "uploadUrl")
-        public_url = _required_response_string(presign, "publicUrl")
-
-        with path.open("rb") as source:
-            response = await session.put(
-                upload_url,
-                data=source,
-                headers={"Content-Type": content_type},
-            )
-            try:
-                if not 200 <= response.status < 300:
-                    message = await _response_error_message(response)
-                    raise ZernioHTTPError(
-                        response.status,
-                        f"media upload failed: {message}",
-                        _retry_after(response),
-                    )
-                await response.read()
-            finally:
-                response.release()
-
-        return {
-            "url": public_url,
-            "type": "image" if media.media_type == "photo" else "video",
-        }
 
     async def _create_post(
         self,
@@ -248,58 +219,6 @@ def _validate_post(post: Post, target: PublishTarget) -> tuple[MediaFile, ...]:
     return media_files
 
 
-async def _request_json(
-    session: aiohttp.ClientSession,
-    method: str,
-    url: str,
-    **kwargs: Any,
-) -> dict[str, Any]:
-    response = await session.request(method, url, **kwargs)
-    try:
-        try:
-            payload = await response.json(content_type=None)
-        except (aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError):
-            payload = None
-        if not 200 <= response.status < 300:
-            message = _error_message(payload) or await _response_error_message(response)
-            raise ZernioHTTPError(
-                response.status,
-                message,
-                _retry_after(response),
-            )
-        if not isinstance(payload, dict):
-            raise ZernioHTTPError(response.status, "invalid JSON response")
-        return payload
-    finally:
-        response.release()
-
-
-async def _response_error_message(response: aiohttp.ClientResponse) -> str:
-    text = (await response.text()).strip()
-    return text[:500] if text else "empty response"
-
-
-def _error_message(payload: Any) -> str | None:
-    if not isinstance(payload, dict):
-        return None
-    for key in ("error", "message", "code"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def _retry_after(response: aiohttp.ClientResponse) -> int | None:
-    value = response.headers.get("Retry-After")
-    if value is None:
-        return None
-    try:
-        retry_after = int(value)
-    except ValueError:
-        return None
-    return retry_after if retry_after > 0 else None
-
-
 def _media_path(media: MediaFile) -> Path:
     path = Path(media.file_path)
     return path if path.is_absolute() else PROJECT_ROOT / path
@@ -324,30 +243,5 @@ def _content_type(path: Path, media_type: str) -> str:
     return guessed
 
 
-def _required_response_string(payload: dict[str, Any], key: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        raise PublisherError(f"Zernio response contains no {key}")
-    return value
-
-
-def _external_id(payload: dict[str, Any]) -> str:
-    for key in ("post", "existingPost"):
-        post = payload.get(key)
-        if isinstance(post, dict):
-            value = post.get("_id") or post.get("id")
-            if value:
-                return str(value)
-    value = payload.get("_id") or payload.get("id")
-    if value:
-        return str(value)
-    raise PublisherError("Zernio returned no post identifier")
-
-
 def _photo_title(caption: str) -> str:
     return caption[:90]
-
-
-def _safe_error(error: Exception) -> str:
-    message = str(error).strip()
-    return f"{type(error).__name__}: {message}" if message else type(error).__name__

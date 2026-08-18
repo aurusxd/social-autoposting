@@ -31,16 +31,8 @@ def save_submission(
         raise SubmissionError("Нужно выбрать хотя бы одну площадку")
     if any(media.file_path is None for media in draft.media):
         raise SubmissionError("Не все медиафайлы сохранены")
-    if any(target.platform == "instagram" for target in targets) and not draft.media:
-        raise SubmissionError("Для Instagram нужно добавить фото или видео")
-    if (
-        any(
-            target.platform == "instagram" and target.kind == "story"
-            for target in targets
-        )
-        and len(draft.media) != 1
-    ):
-        raise SubmissionError("Для Instagram Story выберите ровно один файл")
+    if any(target.platform == "instagram" for target in targets):
+        _validate_instagram_draft(draft, targets)
     if any(target.platform == "tiktok" for target in targets):
         _validate_tiktok_draft(draft)
 
@@ -79,6 +71,32 @@ def save_submission(
             post_id=post.id,
             job_ids=tuple(job.id for job in jobs),
         )
+
+
+def _validate_instagram_draft(
+    draft: PostDraft,
+    targets: tuple[PublishTarget, ...],
+) -> None:
+    if not draft.media:
+        raise SubmissionError("Для Instagram нужно добавить фото или видео")
+    if len(draft.caption) > 2200:
+        raise SubmissionError("Подпись Instagram превышает 2200 символов")
+    if (
+        any(
+            target.platform == "instagram" and target.kind == "story"
+            for target in targets
+        )
+        and len(draft.media) != 1
+    ):
+        raise SubmissionError("Для Instagram Story выберите ровно один файл")
+    if (
+        any(
+            target.platform == "instagram" and target.kind == "feed"
+            for target in targets
+        )
+        and len(draft.media) > 10
+    ):
+        raise SubmissionError("Карусель Instagram поддерживает не более 10 файлов")
 
 
 def _validate_tiktok_draft(draft: PostDraft) -> None:

@@ -99,6 +99,43 @@ URL в задачу TikTok. Для повторов используется с�
 укажите в `ZERNIO_TIKTOK_PRIVACY_LEVEL` одно из значений, которое доступно ему:
 `MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR` или `SELF_ONLY`.
 
+## Видео больше 20 МБ из Telegram
+
+Облачный Telegram Bot API разрешает боту скачивать файлы только до 20 МБ.
+Docker Compose запускает локальный Bot API 10.2 в режиме `--local`: скачивание
+становится неограниченным, а загрузка поддерживается до 2000 МБ.
+
+Получите `api_id` и `api_hash` в разделе **API development tools** на
+`https://my.telegram.org` и добавьте их в `.env`:
+
+```dotenv
+TELEGRAM_API_ID=
+TELEGRAM_API_HASH=
+```
+
+Перед самым первым запуском локального API нужно один раз отключить bot token
+от облачного Bot API. Сначала остановите старый bot/worker, затем выполните в
+PowerShell из корня проекта:
+
+```powershell
+docker compose stop bot worker
+$telegramBotToken = ((Get-Content .env | Where-Object {
+    $_ -match '^TELEGRAM_BOT_TOKEN='
+} | Select-Object -First 1) -split '=', 2)[1].Trim()
+Invoke-RestMethod -Method Post `
+    -Uri "https://api.telegram.org/bot$telegramBotToken/logOut"
+Remove-Variable telegramBotToken
+docker compose up -d --build
+```
+
+`logOut` выполняется только при первом переходе с облачного API. При обычных
+перезапусках повторять его не нужно. Данные локального API находятся в volume
+`telegram_bot_api_data`; не удаляйте его через `docker compose down -v`.
+
+Большие входящие файлы читаются напрямую из этого volume, поэтому режим
+поддерживается при запуске приложения через Docker Compose. При нативном запуске
+`python main.py` используется облачный API и сохраняется лимит 20 МБ.
+
 ## Проверка Celery
 
 При работающих Redis и worker отправьте тестовую задачу:
@@ -126,10 +163,11 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Compose сначала применяет Alembic-миграции, затем запускает Redis, Celery worker
-и Telegram-бота. Redis доступен только внутри compose-сети. SQLite,
-Instagram-сессия, медиа и данные Redis сохраняются в именованных volumes и
-переживают пересоздание контейнеров.
+Compose запускает локальный Telegram Bot API и Redis, применяет
+Alembic-миграции, затем запускает Celery worker и Telegram-бота. Внутренние API
+и Redis не публикуются наружу. SQLite, Instagram-сессия, медиа, данные Redis и
+локального Telegram API сохраняются в именованных volumes и переживают
+пересоздание контейнеров.
 
 Посмотреть логи:
 

@@ -7,7 +7,7 @@ from app.publishers.tiktok_publisher import TikTokPublisher
 
 def build_publishers(config: AppConfig) -> dict[str, Publisher]:
     publishers: dict[str, Publisher] = {
-        "telegram": TelegramPublisher(config.bot_token),
+        "telegram": TelegramPublisher(config.bot_token, config.telegram_api),
     }
     if config.instagram is not None:
         publishers["instagram"] = InstagramPublisher(

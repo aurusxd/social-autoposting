@@ -1,6 +1,6 @@
 import asyncio
 
-from aiogram import Bot, Dispatcher
+from aiogram import Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
@@ -10,12 +10,14 @@ from loguru import logger
 from app.bot.handlers import router
 from app.bot.middleware import OwnerOnlyMiddleware
 from app.core.config import load_config
+from app.services.telegram_client import build_telegram_bot
 
 
 async def run() -> None:
     config = load_config()
-    bot = Bot(
-        token=config.bot_token,
+    bot = build_telegram_bot(
+        config.bot_token,
+        config.telegram_api,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dispatcher = Dispatcher(

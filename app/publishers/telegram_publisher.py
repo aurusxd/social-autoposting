@@ -11,6 +11,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 
+from app.core.config import TelegramAPIConfig
 from app.publishers.base import (
     MediaFile,
     Post,
@@ -18,6 +19,7 @@ from app.publishers.base import (
     PublishResult,
     PublishTarget,
 )
+from app.services.telegram_client import build_telegram_bot
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TELEGRAM_CAPTION_LIMIT = 1024
@@ -27,11 +29,12 @@ TELEGRAM_TEXT_LIMIT = 4096
 class TelegramPublisher:
     platform = "telegram"
 
-    def __init__(self, bot_token: str) -> None:
+    def __init__(self, bot_token: str, api_config: TelegramAPIConfig) -> None:
         self.bot_token = bot_token
+        self.api_config = api_config
 
     async def publish(self, post: Post, target: PublishTarget) -> PublishResult:
-        bot = Bot(token=self.bot_token)
+        bot = build_telegram_bot(self.bot_token, self.api_config)
         try:
             message_ids = await self._send_post(bot, post, target)
         except (TelegramNetworkError, TelegramRetryAfter, TelegramServerError) as error:

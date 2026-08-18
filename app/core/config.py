@@ -24,6 +24,14 @@ class PublishTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class TelegramAPIConfig:
+    base_url: str
+    local: bool
+    server_files_path: Path
+    client_files_path: Path
+
+
+@dataclass(frozen=True, slots=True)
 class InstagramConfig:
     username: str
     password: str
@@ -46,6 +54,7 @@ class TikTokConfig:
 class AppConfig:
     bot_token: str
     owner_id: int
+    telegram_api: TelegramAPIConfig
     targets: tuple[PublishTarget, ...]
     instagram: InstagramConfig | None
     tiktok: TikTokConfig | None
@@ -72,11 +81,13 @@ def load_config(
     if owner_id <= 0:
         raise ConfigError("TELEGRAM_OWNER_ID must be a positive integer")
 
+    telegram_api = _telegram_api_config()
     instagram = _instagram_config(raw)
     tiktok = _tiktok_config(raw)
     return AppConfig(
         bot_token=token,
         owner_id=owner_id,
+        telegram_api=telegram_api,
         targets=targets,
         instagram=instagram,
         tiktok=tiktok,
@@ -206,6 +217,39 @@ def _instagram_config(raw: dict[str, Any]) -> InstagramConfig | None:
     )
 
 
+def _telegram_api_config() -> TelegramAPIConfig:
+    base_url = (
+        os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org")
+        .strip()
+        .rstrip("/")
+        or "https://api.telegram.org"
+    )
+    if not base_url.startswith(("http://", "https://")):
+        raise ConfigError("TELEGRAM_API_BASE_URL must use http:// or https://")
+
+    local = _environment_bool("TELEGRAM_API_LOCAL", default=False)
+    server_files_path = Path(
+        os.getenv(
+            "TELEGRAM_API_SERVER_FILES_PATH",
+            "/var/lib/telegram-bot-api",
+        ).strip()
+        or "/var/lib/telegram-bot-api"
+    )
+    client_files_path = Path(
+        os.getenv(
+            "TELEGRAM_API_CLIENT_FILES_PATH",
+            "/var/lib/telegram-bot-api",
+        ).strip()
+        or "/var/lib/telegram-bot-api"
+    )
+    return TelegramAPIConfig(
+        base_url=base_url,
+        local=local,
+        server_files_path=server_files_path,
+        client_files_path=client_files_path,
+    )
+
+
 def _tiktok_config(raw: dict[str, Any]) -> TikTokConfig | None:
     tiktok = _optional_mapping(raw, "tiktok")
     if not _optional_bool(tiktok, "enabled", "tiktok"):
@@ -255,6 +299,18 @@ def _required_environment(key: str, integration: str = "Instagram") -> str:
     if not value:
         raise ConfigError(f"{key} is required when {integration} is enabled")
     return value
+
+
+def _environment_bool(key: str, default: bool) -> bool:
+    raw = os.getenv(key)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{key} must be true or false")
 
 
 def load_environment(env_path: str | Path = ".env") -> None:

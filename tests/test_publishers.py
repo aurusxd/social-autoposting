@@ -1,12 +1,26 @@
 import asyncio
 from pathlib import Path
 
-from app.core.config import AppConfig, InstagramConfig, TikTokConfig
+from app.core.config import (
+    AppConfig,
+    InstagramConfig,
+    TelegramAPIConfig,
+    TikTokConfig,
+)
 from app.publishers import Post, PublishResult, PublishTarget
 from app.publishers.factory import build_publishers
 from app.publishers.fakes import FakePublisher
 from app.publishers.instagram_publisher import InstagramPublisher
 from app.publishers.tiktok_publisher import TikTokPublisher
+
+
+def _telegram_api() -> TelegramAPIConfig:
+    return TelegramAPIConfig(
+        base_url="https://api.telegram.org",
+        local=False,
+        server_files_path=Path("/var/lib/telegram-bot-api"),
+        client_files_path=Path("/var/lib/telegram-bot-api"),
+    )
 
 
 def test_fake_publisher_records_calls_and_result() -> None:
@@ -25,6 +39,7 @@ def test_publisher_factory_registers_enabled_instagram() -> None:
     config = AppConfig(
         bot_token="telegram-token",
         owner_id=123,
+        telegram_api=_telegram_api(),
         targets=(),
         instagram=InstagramConfig(
             username="instagram-user",
@@ -46,6 +61,7 @@ def test_publisher_factory_registers_enabled_tiktok() -> None:
     config = AppConfig(
         bot_token="telegram-token",
         owner_id=123,
+        telegram_api=_telegram_api(),
         targets=(),
         instagram=None,
         tiktok=TikTokConfig(

@@ -9,6 +9,8 @@ from app.core.config import ConfigError, load_config
 def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_OWNER_ID", "12345")
+    monkeypatch.setenv("INSTAGRAM_USERNAME", "instagram-user")
+    monkeypatch.setenv("INSTAGRAM_PASSWORD", "instagram-password")
 
 
 def _write(path: Path, content: str) -> Path:
@@ -43,6 +45,10 @@ tiktok:
         ("instagram", "story"),
         ("tiktok", "feed"),
     ]
+    assert config.instagram is not None
+    assert config.instagram.username == "instagram-user"
+    assert config.instagram.session_path == Path("data/instagram_session.json")
+    assert config.instagram.request_timeout == 30
 
 
 def test_missing_target_name_fails_at_startup(tmp_path: Path) -> None:
@@ -83,4 +89,15 @@ def test_owner_id_is_required(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.delenv("TELEGRAM_OWNER_ID")
 
     with pytest.raises(ConfigError, match="TELEGRAM_OWNER_ID"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_instagram_credentials_are_required_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "instagram:\n  enabled: true\n")
+    monkeypatch.delenv("INSTAGRAM_USERNAME")
+
+    with pytest.raises(ConfigError, match="INSTAGRAM_USERNAME"):
         load_config(config_path, tmp_path / ".env")

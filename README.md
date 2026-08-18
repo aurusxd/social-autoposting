@@ -2,7 +2,7 @@
 
 Telegram-бот принимает текст, фото и видео, сохраняет пост в SQLite и создаёт
 задания публикации. Celery worker получает задания через Redis и публикует их в
-Telegram-каналы. Для WhatsApp, Instagram и TikTok пока есть только цели в UI:
+Telegram-каналы и Instagram. Для WhatsApp и TikTok пока есть только цели в UI:
 соответствующие паблишеры ещё не реализованы.
 
 ## Подготовка
@@ -10,7 +10,8 @@ Telegram-каналы. Для WhatsApp, Instagram и TikTok пока есть т
 1. Установите Python 3.12+ и зависимости:
    `python -m pip install -e ".[dev]"`.
 2. Скопируйте `.env.example` в `.env`.
-3. Заполните `TELEGRAM_BOT_TOKEN` и `TELEGRAM_OWNER_ID`.
+3. Заполните `TELEGRAM_BOT_TOKEN` и `TELEGRAM_OWNER_ID`. Если Instagram включён
+   в `config.yaml`, также заполните `INSTAGRAM_USERNAME` и `INSTAGRAM_PASSWORD`.
 4. Укажите Telegram-каналы в `config.yaml` и добавьте бота в них как
    администратора с правом публикации.
 5. Примените миграции: `alembic upgrade head`.
@@ -34,6 +35,42 @@ Telegram-каналы. Для WhatsApp, Instagram и TikTok пока есть т
 ```
 
 Команды бота: `/start`, `/new`, `/cancel`.
+
+## Instagram
+
+Публикатор поддерживает:
+
+- одиночное JPG-фото или MP4-видео в ленте;
+- карусель из JPG/MP4 в ленте;
+- одну JPG-фотографию или одно MP4-видео в Story.
+
+Текст без медиа и несколько файлов в одной Story отклоняются до создания
+задания. Максимальная длина подписи — 2200 символов.
+
+Настройки в `.env`:
+
+```dotenv
+INSTAGRAM_USERNAME=
+INSTAGRAM_PASSWORD=
+INSTAGRAM_TOTP_SECRET=
+INSTAGRAM_SESSION_PATH=data/instagram_session.json
+INSTAGRAM_PROXY=
+INSTAGRAM_REQUEST_TIMEOUT=30
+```
+
+После первого успешного входа `instagrapi`-сессия сохраняется в
+`data/instagram_session.json` и используется повторно. В Docker этот файл
+попадает в постоянный volume `app_data`. Не добавляйте файл сессии в Git и не
+копируйте его посторонним.
+
+Если на аккаунте включена двухфакторная аутентификация через приложение,
+укажите её TOTP secret в `INSTAGRAM_TOTP_SECRET`. Оставьте переменную пустой,
+если 2FA не используется.
+
+`instagrapi` использует неофициальный Instagram Private API. Первый вход может
+потребовать подтверждения в официальном приложении, а слишком частые действия
+могут вызвать временное ограничение или блокировку аккаунта. При ответе о
+лимите Celery ждёт 15 минут перед следующей попыткой.
 
 ## Проверка Celery
 
@@ -63,9 +100,9 @@ docker compose ps
 ```
 
 Compose сначала применяет Alembic-миграции, затем запускает Redis, Celery worker
-и Telegram-бота. Redis доступен только внутри compose-сети. SQLite, медиа и
-данные Redis сохраняются в именованных volumes и переживают пересоздание
-контейнеров.
+и Telegram-бота. Redis доступен только внутри compose-сети. SQLite,
+Instagram-сессия, медиа и данные Redis сохраняются в именованных volumes и
+переживают пересоздание контейнеров.
 
 Посмотреть логи:
 

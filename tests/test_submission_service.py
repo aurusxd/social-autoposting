@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -51,3 +52,24 @@ def test_submission_rejects_unstored_media() -> None:
         assert "медиафайлы" in str(error)
     else:
         raise AssertionError("SubmissionError was not raised")
+
+
+def test_instagram_rejects_text_only_submission() -> None:
+    draft = PostDraft(caption="Только текст")
+    targets = (PublishTarget("instagram", "self", "feed", "Лента"),)
+
+    with pytest.raises(SubmissionError, match="фото или видео"):
+        save_submission(draft, targets)
+
+
+def test_instagram_story_rejects_multiple_media() -> None:
+    draft = PostDraft(
+        media=(
+            DraftMedia("first", "photo", "media/first.jpg"),
+            DraftMedia("second", "photo", "media/second.jpg"),
+        )
+    )
+    targets = (PublishTarget("instagram", "self", "story", "История"),)
+
+    with pytest.raises(SubmissionError, match="ровно один"):
+        save_submission(draft, targets)

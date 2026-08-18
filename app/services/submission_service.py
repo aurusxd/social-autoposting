@@ -31,6 +31,16 @@ def save_submission(
         raise SubmissionError("Нужно выбрать хотя бы одну площадку")
     if any(media.file_path is None for media in draft.media):
         raise SubmissionError("Не все медиафайлы сохранены")
+    if any(target.platform == "instagram" for target in targets) and not draft.media:
+        raise SubmissionError("Для Instagram нужно добавить фото или видео")
+    if (
+        any(
+            target.platform == "instagram" and target.kind == "story"
+            for target in targets
+        )
+        and len(draft.media) != 1
+    ):
+        raise SubmissionError("Для Instagram Story выберите ровно один файл")
 
     with session_factory.begin() as session:
         post = Post(

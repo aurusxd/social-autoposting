@@ -49,7 +49,7 @@ app/
     base.py               # Protocol Publisher
     telegram_publisher.py
     whatsapp_publisher.py
-    instagram_publisher.py
+    instagram_publisher.py # feed/story через instagrapi + сохранение сессии
     tiktok_publisher.py
     fakes.py               # фейковые клиенты для тестов
 main.py                    # точка входа Telegram UI
@@ -137,6 +137,7 @@ class PublishResult:
     success: bool
     retryable: bool = False
     error: str | None = None
+    retry_after: int | None = None  # индивидуальная задержка ретрая в секундах
     external_id: str | None = None  # id опубликованного поста на площадке, если есть
 ```
 
@@ -173,6 +174,10 @@ DATABASE_URL=
 WHATSAPP_API_KEY=
 INSTAGRAM_USERNAME=
 INSTAGRAM_PASSWORD=
+INSTAGRAM_TOTP_SECRET=
+INSTAGRAM_SESSION_PATH=data/instagram_session.json
+INSTAGRAM_PROXY=
+INSTAGRAM_REQUEST_TIMEOUT=30
 TIKTOK_SESSION_ID=
 ```
 
@@ -211,6 +216,6 @@ TIKTOK_SESSION_ID=
 2. Эталонная вертикаль: `publish_jobs` + воркер + `TelegramPublisher` end-to-end (пост из бота публикуется в тестовый Telegram-канал).
 3. Инлайн-клавиатура выбора целей публикации (мультиселект каналов/групп из конфига) + статус-репорт в чат по завершении джобов.
 4. `WhatsAppPublisher` (Green API/Wappi).
-5. `InstagramPublisher` (instagrapi): лента + сторис.
+5. `InstagramPublisher` (instagrapi): лента + сторис. Реализовано.
 6. `TikTokPublisher`.
 7. Ретраи с бэкоффом, crash-recovery зависших `in_progress`-джобов, логирование через loguru.

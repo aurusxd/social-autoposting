@@ -31,6 +31,7 @@ class PublishResult:
     success: bool
     retryable: bool = False
     error: str | None = None
+    retry_after: int | None = None
     external_id: str | None = None
 
 

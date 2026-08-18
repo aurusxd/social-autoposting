@@ -6,4 +6,5 @@
 __pycache__/
 *.py[cod]
 data/*.db*
+data/instagram_session.json*
 media/

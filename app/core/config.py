@@ -24,10 +24,21 @@ class PublishTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class InstagramConfig:
+    username: str
+    password: str
+    totp_secret: str | None
+    session_path: Path
+    proxy: str | None
+    request_timeout: int
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     bot_token: str
     owner_id: int
     targets: tuple[PublishTarget, ...]
+    instagram: InstagramConfig | None
 
 
 def load_config(
@@ -51,7 +62,13 @@ def load_config(
     if owner_id <= 0:
         raise ConfigError("TELEGRAM_OWNER_ID must be a positive integer")
 
-    return AppConfig(bot_token=token, owner_id=owner_id, targets=targets)
+    instagram = _instagram_config(raw)
+    return AppConfig(
+        bot_token=token,
+        owner_id=owner_id,
+        targets=targets,
+        instagram=instagram,
+    )
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -143,6 +160,44 @@ def _optional_bool(parent: dict[str, Any], key: str, location: str) -> bool:
     value = parent.get(key, False)
     if not isinstance(value, bool):
         raise ConfigError(f"{location}.{key} must be true or false")
+    return value
+
+
+def _instagram_config(raw: dict[str, Any]) -> InstagramConfig | None:
+    instagram = _optional_mapping(raw, "instagram")
+    if not _optional_bool(instagram, "enabled", "instagram"):
+        return None
+
+    username = _required_environment("INSTAGRAM_USERNAME")
+    password = _required_environment("INSTAGRAM_PASSWORD")
+    totp_secret = os.getenv("INSTAGRAM_TOTP_SECRET", "").strip() or None
+    session_path = Path(
+        os.getenv("INSTAGRAM_SESSION_PATH", "data/instagram_session.json").strip()
+        or "data/instagram_session.json"
+    )
+    proxy = os.getenv("INSTAGRAM_PROXY", "").strip() or None
+    timeout_raw = os.getenv("INSTAGRAM_REQUEST_TIMEOUT", "30").strip()
+    try:
+        request_timeout = int(timeout_raw)
+    except ValueError as error:
+        raise ConfigError("INSTAGRAM_REQUEST_TIMEOUT must be an integer") from error
+    if request_timeout <= 0:
+        raise ConfigError("INSTAGRAM_REQUEST_TIMEOUT must be positive")
+
+    return InstagramConfig(
+        username=username,
+        password=password,
+        totp_secret=totp_secret,
+        session_path=session_path,
+        proxy=proxy,
+        request_timeout=request_timeout,
+    )
+
+
+def _required_environment(key: str) -> str:
+    value = os.getenv(key, "").strip()
+    if not value:
+        raise ConfigError(f"{key} is required when Instagram is enabled")
     return value
 
 

@@ -84,6 +84,7 @@ def test_retryable_job_fails_on_third_attempt(
     third = tasks.process_publish_job(job_id)
 
     assert (first.state, first.attempt) == ("retry", 1)
+    assert first.retry_after is None
     assert (second.state, second.attempt) == ("retry", 2)
     assert third.state == "failed"
     assert _stored_statuses(factory, post_id, job_id) == ("failed", "failed", 3)

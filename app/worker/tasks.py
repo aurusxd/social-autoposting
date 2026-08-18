@@ -38,6 +38,7 @@ class JobOutcome:
     state: Literal["done", "retry", "failed", "ignored"]
     attempt: int | None = None
     error: str | None = None
+    retry_after: int | None = None
 
 
 @celery.task(name="worker.healthcheck")
@@ -58,7 +59,7 @@ def publish_job(self, job_id: int) -> None:
         return
 
     attempt = outcome.attempt or 1
-    delay = RETRY_DELAYS[attempt]
+    delay = outcome.retry_after or RETRY_DELAYS[attempt]
     error = RuntimeError(outcome.error or "Temporary publisher error")
     logger.warning("Publish job {} will retry in {} seconds", job_id, delay)
     raise self.retry(exc=error, countdown=delay)
@@ -84,7 +85,12 @@ def process_publish_job(job_id: int) -> JobOutcome:
         if result.retryable:
             attempt = repository.schedule_retry(job_id, error_text)
             if attempt is not None:
-                return JobOutcome("retry", attempt=attempt, error=error_text)
+                return JobOutcome(
+                    "retry",
+                    attempt=attempt,
+                    error=error_text,
+                    retry_after=result.retry_after,
+                )
 
         repository.mark_failed(job_id, error_text)
         repository.refresh_post_status(claimed_job.post_id)

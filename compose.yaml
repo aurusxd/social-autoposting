@@ -13,6 +13,9 @@ x-app: &app
     TELEGRAM_API_LOCAL: "true"
     TELEGRAM_API_SERVER_FILES_PATH: /var/lib/telegram-bot-api
     TELEGRAM_API_CLIENT_FILES_PATH: /var/lib/telegram-bot-api
+    WHATSAPP_API_URL: http://openwa:2785/api
+    WHATSAPP_MEDIA_BASE_URL: http://media-server
+    WHATSAPP_MEDIA_ROOT: /app/media
   volumes:
     - app_data:/app/data
     - app_media:/app/media
@@ -29,6 +32,60 @@ x-app: &app
       max-file: "3"
 
 services:
+  media-server:
+    image: nginx:alpine
+    volumes:
+      - app_media:/usr/share/nginx/html:ro
+    expose:
+      - "80"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:0.11.1
+    environment:
+      NODE_ENV: production
+      PORT: "2785"
+      NODE_ID: openwa-single
+      API_MASTER_KEY: ${WHATSAPP_API_KEY:?WHATSAPP_API_KEY is required}
+      ENGINE_TYPE: ${OPENWA_ENGINE_TYPE:-baileys}
+      AUTO_START_SESSIONS: "true"
+      BAILEYS_MARK_ONLINE_ON_CONNECT: "false"
+      SERVE_DASHBOARD: "true"
+      CSP_UPGRADE_INSECURE_REQUESTS: "false"
+      SSRF_ALLOWED_HOSTS: media-server
+      MEDIA_DOWNLOAD_MAX_BYTES: ${WHATSAPP_MEDIA_MAX_BYTES:-104857600}
+      BODY_SIZE_LIMIT: ${OPENWA_BODY_SIZE_LIMIT:-140mb}
+      INFLIGHT_BODY_BUDGET_BYTES: ${OPENWA_INFLIGHT_BODY_BUDGET_BYTES:-587202560}
+    volumes:
+      - openwa_data:/app/data
+    ports:
+      - "${OPENWA_BIND_HOST:-127.0.0.1}:${OPENWA_PORT:-2785}:2785"
+    depends_on:
+      media-server:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - require('http').get('http://127.0.0.1:2785/api/health/ready',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    stop_grace_period: 45s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   telegram-bot-api:
     image: aiogram/telegram-bot-api:10.2
     env_file:
@@ -95,6 +152,8 @@ services:
         condition: service_healthy
       telegram-bot-api:
         condition: service_healthy
+      openwa:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
@@ -121,3 +180,4 @@ volumes:
   app_media:
   redis_data:
   telegram_bot_api_data:
+  openwa_data:

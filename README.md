@@ -2,8 +2,7 @@
 
 Telegram-бот принимает текст, фото и видео, сохраняет пост в SQLite и создаёт
 задания публикации. Celery worker получает задания через Redis и публикует их в
-Telegram-каналы, Instagram и TikTok. Для WhatsApp пока есть только цели в UI:
-соответствующий паблишер ещё не реализован.
+Telegram-каналы, выбранные WhatsApp-группы/каналы, Instagram и TikTok.
 
 ## Подготовка
 
@@ -11,8 +10,8 @@ Telegram-каналы, Instagram и TikTok. Для WhatsApp пока есть т
    `python -m pip install -e ".[dev]"`.
 2. Скопируйте `.env.example` в `.env`.
 3. Заполните `TELEGRAM_BOT_TOKEN` и `TELEGRAM_OWNER_ID`. Для включённых в
-   `config.yaml` Instagram и TikTok также заполните переменные соответствующих
-   интеграций из разделов ниже.
+   `config.yaml` WhatsApp, Instagram и TikTok также заполните переменные
+   соответствующих интеграций из разделов ниже.
 4. Укажите Telegram-каналы в `config.yaml` и добавьте бота в них как
    администратора с правом публикации.
 5. Примените миграции: `alembic upgrade head`.
@@ -36,6 +35,58 @@ Telegram-каналы, Instagram и TikTok. Для WhatsApp пока есть т
 ```
 
 Команды бота: `/start`, `/new`, `/cancel`.
+
+## WhatsApp через OpenWA
+
+Публикатор отправляет текст, JPG/PNG/GIF/WebP и MP4/3GP в выбранные группы
+(`...@g.us`) и каналы (`...@newsletter`). Несколько медиа отправляются по
+очереди, подпись прикрепляется к первому файлу. Подпись длиннее 1024 символов
+сначала отправляется отдельным текстовым сообщением. Если часть поста уже
+отправлена, автоматический повтор отключается, чтобы не создавать дубли.
+
+OpenWA использует неофициальные WhatsApp-клиенты. Всегда остаётся риск
+ограничения или блокировки номера; используйте отдельный номер и не делайте
+массовые рассылки незнакомым получателям. Compose по умолчанию включает Baileys,
+потому что `whatsapp-web.js` сейчас не умеет отправлять медиа в каналы. Если
+нужны только группы и важнее снизить риск, установите
+`OPENWA_ENGINE_TYPE=whatsapp-web.js`.
+
+Первичная настройка:
+
+1. Создайте ключ длиной не менее 32 символов и сохраните его в
+   `WHATSAPP_API_KEY`:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"
+   ```
+
+2. Запустите OpenWA: `docker compose up -d openwa`.
+3. Откройте `http://127.0.0.1:2785`, введите API-ключ, создайте сессию
+   `social-autoposting`, запустите её и отсканируйте QR-код в WhatsApp.
+4. Скопируйте UUID сессии в `WHATSAPP_SESSION_ID` внутри `.env`.
+5. Получите ID групп через `GET /api/sessions/{sessionId}/groups`. ID канала
+   можно получить из ответа `POST /api/sessions/{sessionId}/channels/subscribe`
+   с его invite-кодом. Запишите нужные JID и названия в `config.yaml`.
+6. Перезапустите приложение: `docker compose up -d --build`.
+
+Основные настройки:
+
+```dotenv
+WHATSAPP_API_URL=http://localhost:2785/api
+WHATSAPP_API_KEY=
+WHATSAPP_SESSION_ID=
+WHATSAPP_REQUEST_TIMEOUT=120
+WHATSAPP_MEDIA_MAX_BYTES=104857600
+OPENWA_ENGINE_TYPE=baileys
+OPENWA_BIND_HOST=127.0.0.1
+OPENWA_PORT=2785
+```
+
+В Docker медиа передаются по закрытому `media-server` внутри сети Compose, без
+Base64 и без публикации файлов наружу. При нативном запуске без
+`WHATSAPP_MEDIA_BASE_URL` используется Base64. Порт панели OpenWA по умолчанию
+доступен только на localhost; для удалённого сервера используйте SSH-туннель,
+а не открывайте HTTP API в интернет.
 
 ## Instagram через Zernio
 
@@ -157,10 +208,11 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Compose запускает локальный Telegram Bot API и Redis, применяет
-Alembic-миграции, затем запускает Celery worker и Telegram-бота. Внутренние API
-и Redis не публикуются наружу. SQLite, медиа, данные Redis и
-локального Telegram API сохраняются в именованных volumes и переживают
+Compose запускает локальные Telegram Bot API, OpenWA, внутреннюю раздачу медиа
+и Redis, применяет Alembic-миграции, затем запускает Celery worker и
+Telegram-бота. Внутренние API, media-server и Redis не публикуются наружу;
+панель OpenWA привязана к `127.0.0.1`. SQLite, медиа, сессии WhatsApp, данные
+Redis и локального Telegram API сохраняются в именованных volumes и переживают
 пересоздание контейнеров.
 
 Посмотреть логи:

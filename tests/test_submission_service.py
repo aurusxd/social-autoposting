@@ -117,3 +117,11 @@ def test_tiktok_rejects_mixed_media() -> None:
 
     with pytest.raises(SubmissionError, match="смешивание"):
         save_submission(draft, targets)
+
+
+def test_whatsapp_rejects_text_longer_than_api_limit() -> None:
+    draft = PostDraft(caption="a" * 4097)
+    targets = (PublishTarget("whatsapp", "120363123456789@g.us", "group", "Group"),)
+
+    with pytest.raises(SubmissionError, match="4096"):
+        save_submission(draft, targets)

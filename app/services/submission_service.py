@@ -35,6 +35,8 @@ def save_submission(
         _validate_instagram_draft(draft, targets)
     if any(target.platform == "tiktok" for target in targets):
         _validate_tiktok_draft(draft)
+    if any(target.platform == "whatsapp" for target in targets):
+        _validate_whatsapp_draft(draft)
 
     with session_factory.begin() as session:
         post = Post(
@@ -112,3 +114,8 @@ def _validate_tiktok_draft(draft: PostDraft) -> None:
     caption_limit = 2200 if "video" in media_types else 4000
     if len(draft.caption) > caption_limit:
         raise SubmissionError(f"Подпись TikTok превышает {caption_limit} символов")
+
+
+def _validate_whatsapp_draft(draft: PostDraft) -> None:
+    if len(draft.caption) > 4096:
+        raise SubmissionError("Текст WhatsApp превышает 4096 символов")

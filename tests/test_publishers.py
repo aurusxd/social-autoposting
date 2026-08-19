@@ -6,12 +6,14 @@ from app.core.config import (
     InstagramConfig,
     TelegramAPIConfig,
     TikTokConfig,
+    WhatsAppConfig,
 )
 from app.publishers import Post, PublishResult, PublishTarget
 from app.publishers.factory import build_publishers
 from app.publishers.fakes import FakePublisher
 from app.publishers.instagram_publisher import InstagramPublisher
 from app.publishers.tiktok_publisher import TikTokPublisher
+from app.publishers.whatsapp_publisher import WhatsAppPublisher
 
 
 def _telegram_api() -> TelegramAPIConfig:
@@ -41,6 +43,7 @@ def test_publisher_factory_registers_enabled_instagram() -> None:
         owner_id=123,
         telegram_api=_telegram_api(),
         targets=(),
+        whatsapp=None,
         instagram=InstagramConfig(
             api_key="zernio-key",
             account_id="instagram-account",
@@ -62,6 +65,7 @@ def test_publisher_factory_registers_enabled_tiktok() -> None:
         owner_id=123,
         telegram_api=_telegram_api(),
         targets=(),
+        whatsapp=None,
         instagram=None,
         tiktok=TikTokConfig(
             api_key="zernio-key",
@@ -78,3 +82,29 @@ def test_publisher_factory_registers_enabled_tiktok() -> None:
     assert isinstance(publisher, TikTokPublisher)
     assert publisher.account_id == "tiktok-account"
     assert publisher.privacy_level == "SELF_ONLY"
+
+
+def test_publisher_factory_registers_enabled_whatsapp() -> None:
+    config = AppConfig(
+        bot_token="telegram-token",
+        owner_id=123,
+        telegram_api=_telegram_api(),
+        targets=(),
+        whatsapp=WhatsAppConfig(
+            api_url="http://openwa:2785/api",
+            api_key="w" * 32,
+            session_id="session-id",
+            request_timeout=90,
+            media_base_url="http://media-server",
+            media_root=Path("media"),
+            media_max_bytes=100 * 1024**2,
+        ),
+        instagram=None,
+        tiktok=None,
+    )
+
+    publishers = build_publishers(config)
+
+    publisher = publishers["whatsapp"]
+    assert isinstance(publisher, WhatsAppPublisher)
+    assert publisher.session_id == "session-id"

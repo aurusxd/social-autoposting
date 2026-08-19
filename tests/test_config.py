@@ -9,6 +9,8 @@ from app.core.config import ConfigError, load_config
 def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_OWNER_ID", "12345")
+    monkeypatch.setenv("WHATSAPP_API_KEY", "w" * 32)
+    monkeypatch.setenv("WHATSAPP_SESSION_ID", "whatsapp-session")
     monkeypatch.setenv("ZERNIO_API_KEY", "zernio-key")
     monkeypatch.setenv("ZERNIO_INSTAGRAM_ACCOUNT_ID", "instagram-account")
     monkeypatch.setenv("ZERNIO_TIKTOK_ACCOUNT_ID", "tiktok-account")
@@ -60,6 +62,9 @@ tiktok:
     assert config.tiktok.privacy_level == "PUBLIC_TO_EVERYONE"
     assert config.telegram_api.base_url == "https://api.telegram.org"
     assert not config.telegram_api.local
+    assert config.whatsapp is not None
+    assert config.whatsapp.session_id == "whatsapp-session"
+    assert config.whatsapp.media_max_bytes == 100 * 1024**2
 
 
 def test_missing_target_name_fails_at_startup(tmp_path: Path) -> None:
@@ -84,6 +89,30 @@ telegram:
 """,
     )
     with pytest.raises(ConfigError, match="must be unique"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_whatsapp_target_jid_must_match_target_kind(tmp_path: Path) -> None:
+    config_path = _write(
+        tmp_path / "config.yaml",
+        "whatsapp:\n  channels:\n    - jid: group@g.us\n      name: Wrong\n",
+    )
+
+    with pytest.raises(ConfigError, match="@newsletter"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_whatsapp_credentials_are_required_when_targets_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(
+        tmp_path / "config.yaml",
+        "whatsapp:\n  groups:\n    - jid: group@g.us\n      name: Group\n",
+    )
+    monkeypatch.delenv("WHATSAPP_SESSION_ID")
+
+    with pytest.raises(ConfigError, match="WHATSAPP_SESSION_ID"):
         load_config(config_path, tmp_path / ".env")
 
 

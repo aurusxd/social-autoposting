@@ -3,12 +3,23 @@ from app.publishers.base import Publisher
 from app.publishers.instagram_publisher import InstagramPublisher
 from app.publishers.telegram_publisher import TelegramPublisher
 from app.publishers.tiktok_publisher import TikTokPublisher
+from app.publishers.whatsapp_publisher import WhatsAppPublisher
 
 
 def build_publishers(config: AppConfig) -> dict[str, Publisher]:
     publishers: dict[str, Publisher] = {
         "telegram": TelegramPublisher(config.bot_token, config.telegram_api),
     }
+    if config.whatsapp is not None:
+        publishers["whatsapp"] = WhatsAppPublisher(
+            api_url=config.whatsapp.api_url,
+            api_key=config.whatsapp.api_key,
+            session_id=config.whatsapp.session_id,
+            request_timeout=config.whatsapp.request_timeout,
+            media_base_url=config.whatsapp.media_base_url,
+            media_root=config.whatsapp.media_root,
+            media_max_bytes=config.whatsapp.media_max_bytes,
+        )
     if config.instagram is not None:
         publishers["instagram"] = InstagramPublisher(
             api_key=config.instagram.api_key,

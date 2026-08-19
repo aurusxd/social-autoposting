@@ -32,6 +32,17 @@ class TelegramAPIConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WhatsAppConfig:
+    api_url: str
+    api_key: str
+    session_id: str
+    request_timeout: int
+    media_base_url: str | None
+    media_root: Path
+    media_max_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class InstagramConfig:
     api_key: str
     account_id: str
@@ -54,6 +65,7 @@ class AppConfig:
     owner_id: int
     telegram_api: TelegramAPIConfig
     targets: tuple[PublishTarget, ...]
+    whatsapp: WhatsAppConfig | None
     instagram: InstagramConfig | None
     tiktok: TikTokConfig | None
 
@@ -80,6 +92,7 @@ def load_config(
         raise ConfigError("TELEGRAM_OWNER_ID must be a positive integer")
 
     telegram_api = _telegram_api_config()
+    whatsapp = _whatsapp_config(raw)
     instagram = _instagram_config(raw)
     tiktok = _tiktok_config(raw)
     return AppConfig(
@@ -87,6 +100,7 @@ def load_config(
         owner_id=owner_id,
         telegram_api=telegram_api,
         targets=targets,
+        whatsapp=whatsapp,
         instagram=instagram,
         tiktok=tiktok,
     )
@@ -127,7 +141,7 @@ def _parse_targets(raw: dict[str, Any]) -> list[PublishTarget]:
             targets.append(
                 PublishTarget(
                     platform="whatsapp",
-                    key=_required_string(item, "jid", f"whatsapp.{section}"),
+                    key=_whatsapp_jid(item, section, kind),
                     kind=kind,
                     name=_required_string(item, "name", f"whatsapp.{section}"),
                 )
@@ -177,6 +191,18 @@ def _required_string(item: dict[str, Any], key: str, location: str) -> str:
     return value.strip()
 
 
+def _whatsapp_jid(
+    item: dict[str, Any],
+    section: str,
+    kind: str,
+) -> str:
+    jid = _required_string(item, "jid", f"whatsapp.{section}")
+    expected_suffix = "@g.us" if kind == "group" else "@newsletter"
+    if not jid.endswith(expected_suffix):
+        raise ConfigError(f"whatsapp.{section}.jid must end with {expected_suffix}")
+    return jid
+
+
 def _optional_bool(parent: dict[str, Any], key: str, location: str) -> bool:
     value = parent.get(key, False)
     if not isinstance(value, bool):
@@ -199,6 +225,56 @@ def _instagram_config(raw: dict[str, Any]) -> InstagramConfig | None:
         account_id=account_id,
         api_base_url=api_base_url,
         request_timeout=request_timeout,
+    )
+
+
+def _whatsapp_config(raw: dict[str, Any]) -> WhatsAppConfig | None:
+    whatsapp = _optional_mapping(raw, "whatsapp")
+    has_targets = bool(
+        _optional_list(whatsapp, "groups", "whatsapp")
+        or _optional_list(whatsapp, "channels", "whatsapp")
+    )
+    if not has_targets:
+        return None
+
+    api_url = (
+        os.getenv("WHATSAPP_API_URL", "http://localhost:2785/api").strip().rstrip("/")
+        or "http://localhost:2785/api"
+    )
+    if not api_url.startswith(("http://", "https://")):
+        raise ConfigError("WHATSAPP_API_URL must use http:// or https://")
+
+    timeout_raw = os.getenv("WHATSAPP_REQUEST_TIMEOUT", "120").strip()
+    try:
+        request_timeout = int(timeout_raw)
+    except ValueError as error:
+        raise ConfigError("WHATSAPP_REQUEST_TIMEOUT must be an integer") from error
+    if request_timeout <= 0:
+        raise ConfigError("WHATSAPP_REQUEST_TIMEOUT must be positive")
+
+    max_bytes_raw = os.getenv(
+        "WHATSAPP_MEDIA_MAX_BYTES",
+        str(100 * 1024**2),
+    ).strip()
+    try:
+        media_max_bytes = int(max_bytes_raw)
+    except ValueError as error:
+        raise ConfigError("WHATSAPP_MEDIA_MAX_BYTES must be an integer") from error
+    if media_max_bytes <= 0:
+        raise ConfigError("WHATSAPP_MEDIA_MAX_BYTES must be positive")
+
+    media_base_url = os.getenv("WHATSAPP_MEDIA_BASE_URL", "").strip().rstrip("/")
+    if media_base_url and not media_base_url.startswith(("http://", "https://")):
+        raise ConfigError("WHATSAPP_MEDIA_BASE_URL must use http:// or https://")
+
+    return WhatsAppConfig(
+        api_url=api_url,
+        api_key=_required_environment("WHATSAPP_API_KEY", "WhatsApp"),
+        session_id=_required_environment("WHATSAPP_SESSION_ID", "WhatsApp"),
+        request_timeout=request_timeout,
+        media_base_url=media_base_url or None,
+        media_root=Path(os.getenv("WHATSAPP_MEDIA_ROOT", "media").strip() or "media"),
+        media_max_bytes=media_max_bytes,
     )
 
 

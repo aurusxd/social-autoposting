@@ -124,6 +124,8 @@ def test_media_uses_internal_urls_and_preserves_order(tmp_path: Path) -> None:
     assert session.calls[0][1]["json"] == {
         "chatId": "120363000000000000@newsletter",
         "caption": "Подпись",
+        "filename": "first photo.jpg",
+        "mimetype": "image/jpeg",
         "url": "http://media-server/first%20photo.jpg",
     }
     assert session.calls[1][0].endswith("/messages/send-video")
@@ -144,7 +146,36 @@ def test_media_falls_back_to_base64_without_media_server(tmp_path: Path) -> None
     payload = session.calls[0][1]["json"]
     assert payload["mimetype"] == "image/png"
     assert base64.b64decode(payload["base64"]) == b"photo-bytes"
+    assert payload["filename"] == "photo.png"
     assert "url" not in payload
+
+
+def test_media_falls_back_to_base64_when_openwa_rejects_url(
+    tmp_path: Path,
+) -> None:
+    session = FakeSession(
+        [
+            FakeResponse(400, {"message": "Bad Request"}),
+            FakeResponse(201, {"messageId": "fallback-message"}),
+        ]
+    )
+    photo = _media(tmp_path / "photo.jpg", "photo")
+
+    result = _publish(
+        _publisher(session, tmp_path),
+        Post(id=7, caption="Подпись", media_files=(photo,)),
+    )
+
+    assert result.success
+    assert result.external_id == "fallback-message"
+    first_payload = session.calls[0][1]["json"]
+    fallback_payload = session.calls[1][1]["json"]
+    assert first_payload["url"] == "http://media-server/photo.jpg"
+    assert "base64" not in first_payload
+    assert "url" not in fallback_payload
+    assert fallback_payload["mimetype"] == "image/jpeg"
+    assert fallback_payload["filename"] == "photo.jpg"
+    assert base64.b64decode(fallback_payload["base64"]) == b"photo-bytes"
 
 
 def test_long_caption_is_sent_as_text_before_media(tmp_path: Path) -> None:

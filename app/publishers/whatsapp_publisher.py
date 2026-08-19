@@ -125,7 +125,12 @@ class WhatsAppPublisher:
     ) -> dict[str, Any]:
         path = _media_path(media)
         mimetype = _content_type(path, media.media_type)
-        payload: dict[str, Any] = {"chatId": chat_id}
+        endpoint = "send-image" if media.media_type == "photo" else "send-video"
+        payload: dict[str, Any] = {
+            "chatId": chat_id,
+            "filename": path.name,
+            "mimetype": mimetype,
+        }
         if caption:
             payload["caption"] = caption
 
@@ -138,15 +143,19 @@ class WhatsAppPublisher:
                 ) from error
             encoded_path = quote(relative_path.as_posix(), safe="/")
             payload["url"] = f"{self.media_base_url}/{encoded_path}"
+            try:
+                return await self._request_json(session, endpoint, payload)
+            except OpenWAHTTPError as error:
+                if error.status != 400:
+                    raise
+                logger.warning(
+                    "OpenWA rejected media URL; retrying the same file as Base64"
+                )
+                payload.pop("url")
+                payload["base64"] = base64.b64encode(path.read_bytes()).decode("ascii")
         else:
-            payload.update(
-                {
-                    "base64": base64.b64encode(path.read_bytes()).decode("ascii"),
-                    "mimetype": mimetype,
-                }
-            )
+            payload["base64"] = base64.b64encode(path.read_bytes()).decode("ascii")
 
-        endpoint = "send-image" if media.media_type == "photo" else "send-video"
         return await self._request_json(session, endpoint, payload)
 
     async def _request_json(
@@ -158,7 +167,7 @@ class WhatsAppPublisher:
         session_id = quote(self.session_id, safe="")
         response = await session.post(
             f"{self.api_url}/sessions/{session_id}/messages/{endpoint}",
-            json=payload,
+            json=payload.copy(),
             headers={"X-API-Key": self.api_key},
         )
         try:

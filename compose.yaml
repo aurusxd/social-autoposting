@@ -32,6 +32,15 @@ x-app: &app
       max-file: "3"
 
 services:
+  init-app-volumes:
+    <<: *app
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - chown -R 10001:10001 /app/data /app/media
+    restart: "no"
+
   media-server:
     image: nginx:alpine
     volumes:
@@ -134,6 +143,9 @@ services:
   migrate:
     <<: *app
     command: ["alembic", "upgrade", "head"]
+    depends_on:
+      init-app-volumes:
+        condition: service_completed_successfully
     restart: "no"
 
   worker:

@@ -4,6 +4,9 @@ Telegram-бот принимает текст, фото и видео, сохр�
 задания публикации. Celery worker получает задания через Redis и публикует их в
 Telegram-каналы, выбранные WhatsApp-группы/каналы, Instagram и TikTok.
 
+Подробная инструкция для передачи заказчику и запуска на сервере:
+[`DEPLOYMENT.md`](DEPLOYMENT.md).
+
 ## Подготовка
 
 1. Установите Python 3.12+ и зависимости:
@@ -35,6 +38,72 @@ Telegram-каналы, выбранные WhatsApp-группы/каналы, In
 ```
 
 Команды бота: `/start`, `/new`, `/cancel`.
+
+## WhatsApp: выбор движка
+
+У WhatsApp два взаимоисключающих движка, переключаются переменной `.env`:
+
+```dotenv
+WHATSAPP_ENGINE=openwa   # или cloud
+```
+
+| | `openwa` | `cloud` |
+|---|---|---|
+| Официальность | неофициальный клиент | официальный Cloud API от Meta |
+| Группы | любые, без лимита участников | только созданные через Groups API, **до 8 участников** |
+| Каналы (`@newsletter`) | да | **нет, API не существует** |
+| Личные сообщения | нет | да (`whatsapp.contacts`) |
+| Требования | номер + QR-код | Official Business Account, номер в Meta |
+| Риск | блокировка номера | нет |
+
+`openwa` остаётся значением по умолчанию: только он умеет писать в каналы и в
+большие группы. Cloud API имеет смысл, если получателей мало и важна
+легальность. Каналы в `config.yaml` при `WHATSAPP_ENGINE=cloud` вызовут ошибку
+конфигурации на старте — это не баг, официального API у каналов нет.
+
+## WhatsApp через Cloud API
+
+Движок `cloud` публикует через официальный WhatsApp Business Cloud API.
+Требуется **Official Business Account**: для номеров из приложения WhatsApp
+Business и для Multi-solution Conversations Groups API недоступен.
+
+```dotenv
+WHATSAPP_ENGINE=cloud
+WHATSAPP_ACCESS_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_CLOUD_API_BASE_URL=https://graph.facebook.com
+WHATSAPP_API_VERSION=v25.0
+WHATSAPP_REQUEST_TIMEOUT=120
+WHATSAPP_MEDIA_MAX_BYTES=16777216
+```
+
+Цели в `config.yaml`:
+
+```yaml
+whatsapp:
+  groups:
+    - jid: "120363000000000000"   # id из Groups API, без @g.us
+      name: "Группа клиентов"
+  contacts:
+    - phone: "+79001234567"
+      name: "Клиент"
+```
+
+Группы заводятся через Groups API (`POST /{phone-number-id}/groups`), участники
+вступают только сами по инвайт-ссылке — эндпоинта «добавить участника» нет.
+Лимиты Meta: 8 участников на группу, до 10 000 групп на номер, один бизнес на
+группу.
+
+Публикация идёт в `POST /{phone-number-id}/messages` с `recipient_type` `group`
+или `individual`. Медиа сначала загружается в `POST /{phone-number-id}/media` и
+дальше передаётся по `id`, поэтому публичный `MEDIA_PUBLIC_BASE_URL` этому
+движку не нужен. Ограничения Cloud API: фото до 5 МБ (JPEG/PNG), видео до 16 МБ
+(MP4/3GP) — они жёстче, чем у OpenWA. Как и в OpenWA, подпись длиннее 1024
+символов уходит отдельным сообщением, а при частичной отправке автоповтор
+отключается.
+
+Свободный текст вне 24-часового окна общения Meta отклонит — понадобится
+утверждённый шаблон. Отправка шаблонов в этом паблишере не реализована.
 
 ## WhatsApp через OpenWA
 
@@ -72,6 +141,7 @@ OpenWA использует неофициальные WhatsApp-клиенты. 
 Основные настройки:
 
 ```dotenv
+WHATSAPP_ENGINE=openwa
 WHATSAPP_API_URL=http://localhost:2785/api
 WHATSAPP_API_KEY=
 WHATSAPP_SESSION_ID=
@@ -88,61 +158,110 @@ Base64 и без публикации файлов наружу. При нати
 доступен только на localhost; для удалённого сервера используйте SSH-туннель,
 а не открывайте HTTP API в интернет.
 
-## Instagram через Zernio
+## Публичный медиа-сервер
 
-Instagram публикуется через официальный API, который предоставляет Zernio.
-Подключите в Zernio профессиональный Instagram-аккаунт типа Business или
-Creator. Публикатор поддерживает:
-
-- одиночное JPG/PNG-фото в ленте;
-- одиночное MP4/MOV-видео как Reel с показом в ленте;
-- смешанную карусель до 10 фото и видео;
-- одно фото или видео в Story.
-
-Текст без медиа и несколько файлов в одной Story отклоняются до создания
-задания. Максимальная длина подписи — 2200 символов. Instagram API не
-показывает подпись в Story, поэтому для этой цели бот её не отправляет.
-
-Настройки в `.env`:
+Instagram и TikTok забирают файлы **по публичной HTTPS-ссылке**: загрузить их
+байтами в API нельзя (единственное исключение — видео TikTok, оно грузится
+напрямую). Поэтому `media-server` из Compose должен быть доступен из интернета.
 
 ```dotenv
-ZERNIO_API_KEY=
-ZERNIO_INSTAGRAM_ACCOUNT_ID=
-ZERNIO_API_BASE_URL=https://zernio.com/api
-ZERNIO_REQUEST_TIMEOUT=120
+MEDIA_PUBLIC_BASE_URL=https://media.example.com
+MEDIA_ROOT=/app/media
 ```
 
-`ZERNIO_INSTAGRAM_ACCOUNT_ID` — поле `_id` Instagram-аккаунта из ответа
-`GET https://zernio.com/api/v1/accounts?platform=instagram&status=connected`.
-API-ключ и общие настройки Zernio используются совместно с TikTok. Медиа сначала
-загружается по временной ссылке Zernio, затем worker создаёт публикацию со
-стабильным `x-request-id`, чтобы безопасно повторять запрос после сетевого сбоя.
+`MEDIA_PUBLIC_BASE_URL` обязателен, когда включён Instagram или TikTok, и обязан
+начинаться с `https://` — оба API отклоняют `http://`. Compose публикует nginx на
+`${MEDIA_SERVER_BIND_HOST:-127.0.0.1}:${MEDIA_SERVER_PORT:-8080}`; поставьте
+перед ним обратный прокси (nginx, Caddy, Traefik) с сертификатом Let's Encrypt.
+Домен из `MEDIA_PUBLIC_BASE_URL` нужно подтвердить в TikTok Developer Portal
+(**Manage apps → URL properties**), иначе фотопубликации получат
+`url_ownership_unverified`.
 
-## TikTok через Zernio
+WhatsApp продолжает ходить к тому же nginx по внутреннему адресу
+`WHATSAPP_MEDIA_BASE_URL=http://media-server`, наружу для него ничего не нужно.
 
-TikTok публикуется через официальный Content Posting API, который предоставляет
-Zernio. Собственный TikTok Developer App, сайт и домен не нужны. Подключите
-TikTok-аккаунт в Zernio и добавьте в `.env`:
+## Instagram через Graph API
+
+Instagram публикуется напрямую через официальный Instagram Graph API
+(Content Publishing). Нужен профессиональный аккаунт Business или Creator,
+привязанный к странице Facebook, и приложение Meta с разрешениями
+`instagram_basic`, `instagram_content_publish`, `pages_read_engagement`.
 
 ```dotenv
-ZERNIO_API_KEY=
-ZERNIO_TIKTOK_ACCOUNT_ID=
-ZERNIO_API_BASE_URL=https://zernio.com/api
-ZERNIO_REQUEST_TIMEOUT=120
-ZERNIO_TIKTOK_PRIVACY_LEVEL=PUBLIC_TO_EVERYONE
+INSTAGRAM_ACCESS_TOKEN=
+INSTAGRAM_USER_ID=
+INSTAGRAM_API_BASE_URL=https://graph.facebook.com
+INSTAGRAM_API_VERSION=v25.0
+INSTAGRAM_REQUEST_TIMEOUT=120
+INSTAGRAM_STATUS_POLL_INTERVAL=5
+INSTAGRAM_STATUS_POLL_ATTEMPTS=60
 ```
 
-`ZERNIO_TIKTOK_ACCOUNT_ID` — поле `_id` TikTok-аккаунта из ответа
-`GET https://zernio.com/api/v1/accounts?platform=tiktok&status=connected`.
-Поддерживаются одно видео MP4/MOV/WebM или фотокарусель JPG/PNG/WebP. Фото и
-видео в одной публикации смешивать нельзя. Перед публикацией worker получает
-временную ссылку Zernio, загружает туда локальные файлы и передаёт полученные
-URL в задачу TikTok. Для повторов используется стабильный `x-request-id`, чтобы
-сетевой сбой не создавал дубли.
+`INSTAGRAM_USER_ID` — идентификатор Instagram-аккаунта (IG User ID), его выдаёт
+`GET /{page-id}?fields=instagram_business_account`. В `INSTAGRAM_ACCESS_TOKEN`
+положите **токен системного пользователя** Meta Business: обычный long-lived
+токен истекает через 60 дней и потребует ручной замены.
 
-По умолчанию публикация публичная. Если аккаунт не разрешает публичный уровень,
-укажите в `ZERNIO_TIKTOK_PRIVACY_LEVEL` одно из значений, которое доступно ему:
-`MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR` или `SELF_ONLY`.
+Публикатор поддерживает:
+
+- одиночное JPEG-фото в ленте (`media_type=IMAGE`);
+- одиночное MP4/MOV-видео как Reel (`media_type=REELS`, `share_to_feed=true`);
+- карусель до 10 фото и видео (элементы создаются с `is_carousel_item=true`);
+- одно фото или видео в Story (`media_type=STORIES`).
+
+Каждый контейнер опрашивается по `status_code`, пока Instagram не завершит
+обработку, и только потом вызывается `media_publish`. Максимальная длина
+подписи — 2200 символов; в Story подпись не отправляется, её там нет в API.
+Лимит аккаунта — 100 публикаций через API за 24 часа.
+
+**PNG больше не поддерживается**: Graph API принимает для фото только JPEG.
+
+## TikTok через Content Posting API
+
+TikTok публикуется напрямую через официальный Content Posting API в режиме
+Direct Post. Нужно собственное приложение в TikTok Developer Portal со скоупами
+`video.publish` и `user.info.basic`, прошедшее аудит.
+
+```dotenv
+TIKTOK_CLIENT_KEY=
+TIKTOK_CLIENT_SECRET=
+TIKTOK_REFRESH_TOKEN=
+TIKTOK_API_BASE_URL=https://open.tiktokapis.com
+TIKTOK_REQUEST_TIMEOUT=300
+TIKTOK_PRIVACY_LEVEL=PUBLIC_TO_EVERYONE
+TIKTOK_DISABLE_COMMENT=false
+TIKTOK_DISABLE_DUET=false
+TIKTOK_DISABLE_STITCH=false
+TIKTOK_AUTO_ADD_MUSIC=true
+TIKTOK_UPLOAD_CHUNK_SIZE=10485760
+TIKTOK_STATUS_POLL_INTERVAL=5
+TIKTOK_STATUS_POLL_ATTEMPTS=60
+```
+
+`TIKTOK_REFRESH_TOKEN` получается один раз при OAuth-авторизации аккаунта.
+Access-токен живёт 24 часа, поэтому worker обновляет его сам и складывает
+результат в таблицу `oauth_tokens`. TikTok при обновлении может выдать **новый**
+refresh-токен — он тоже сохраняется в БД, значение из `.env` остаётся запасным:
+если сохранённый токен отвергнут, worker один раз повторит обновление с ним.
+
+Что публикуется:
+
+- одно видео MP4/MOV/WebM до 4 ГБ — грузится байтами (`FILE_UPLOAD`), чанками
+  по `TIKTOK_UPLOAD_CHUNK_SIZE` (допустимо 5–64 МБ), файл до 64 МБ уходит одним
+  куском;
+- фотокарусель JPG/PNG/WebP до 35 файлов — забирается TikTok по публичным
+  ссылкам (`PULL_FROM_URL`), другого способа для фото в API нет.
+
+Смешивать фото и видео в одной публикации нельзя. Перед каждой публикацией
+worker вызывает `creator_info/query` — это требование API — и оттуда же берёт
+запреты аккаунта на комментарии, дуэты и стичи. Если аккаунт не разрешает
+уровень из `TIKTOK_PRIVACY_LEVEL`, публикация падает с понятной ошибкой до
+загрузки файла; допустимые значения: `PUBLIC_TO_EVERYONE`,
+`MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR`, `SELF_ONLY`.
+
+После загрузки worker опрашивает `status/fetch` до `PUBLISH_COMPLETE`. Статус
+`FAILED` считается окончательной ошибкой, а истечение таймаута опроса —
+успехом: пост уже принят TikTok, и повтор создал бы дубль.
 
 ## Видео больше 20 МБ из Telegram
 

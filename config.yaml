@@ -4,12 +4,19 @@ telegram:
       name: "Основной канал"
 
 whatsapp:
+  # WHATSAPP_ENGINE=openwa: jid группы вида ...@g.us
+  # WHATSAPP_ENGINE=cloud: id группы из Groups API, без суффикса
   groups:
     - jid: "1234567890-123456@g.us"
       name: "Группа клиентов"
+  # Каналы поддерживает только движок openwa: официального API у них нет
   channels:
     - jid: "1234567890@newsletter"
       name: "WA-канал"
+  # Личные сообщения, только WHATSAPP_ENGINE=cloud
+  # contacts:
+  #   - phone: "+79001234567"
+  #     name: "Клиент"
 
 instagram:
   enabled: true

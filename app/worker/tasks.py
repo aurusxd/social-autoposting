@@ -9,6 +9,7 @@ from loguru import logger
 
 from app.core.config import load_config
 from app.database.database import SessionLocal
+from app.database.repositories.oauth_tokens_repo import DatabaseTokenStore
 from app.database.repositories.publish_jobs_repo import PublishJobRepository
 from app.publishers import (
     MediaFile,
@@ -22,6 +23,7 @@ from app.worker.celery_app import celery
 
 RETRY_DELAYS = {1: 10, 2: 60}
 STALE_JOB_TIMEOUT_SECONDS = 15 * 60
+TIKTOK_TOKEN_STORE = DatabaseTokenStore(SessionLocal)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +140,7 @@ def claim_job(job_id: int) -> ClaimedJob | None:
 def run_publisher(job: ClaimedJob) -> PublishResult:
     try:
         config = load_config()
-        publisher = build_publishers(config).get(job.platform)
+        publisher = build_publishers(config, TIKTOK_TOKEN_STORE).get(job.platform)
         if publisher is None:
             return PublishResult(
                 success=False,

@@ -8,7 +8,18 @@ from typing import Any, Literal
 import yaml
 
 Platform = Literal["telegram", "whatsapp", "instagram", "tiktok"]
-TargetKind = Literal["channel", "group", "feed", "story"]
+TargetKind = Literal["channel", "group", "contact", "feed", "story"]
+WhatsAppEngine = Literal["openwa", "cloud"]
+DEFAULT_GRAPH_API_VERSION = "v25.0"
+WHATSAPP_ENGINES = frozenset({"openwa", "cloud"})
+TIKTOK_PRIVACY_LEVELS = frozenset(
+    {
+        "PUBLIC_TO_EVERYONE",
+        "MUTUAL_FOLLOW_FRIENDS",
+        "FOLLOWER_OF_CREATOR",
+        "SELF_ONLY",
+    }
+)
 
 
 class ConfigError(ValueError):
@@ -33,6 +44,8 @@ class TelegramAPIConfig:
 
 @dataclass(frozen=True, slots=True)
 class WhatsAppConfig:
+    """Settings for the unofficial OpenWA engine."""
+
     api_url: str
     api_key: str
     session_id: str
@@ -43,20 +56,47 @@ class WhatsAppConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class InstagramConfig:
-    api_key: str
-    account_id: str
+class WhatsAppCloudConfig:
+    """Settings for the official WhatsApp Business Cloud API engine."""
+
+    access_token: str
+    phone_number_id: str
     api_base_url: str
+    api_version: str
     request_timeout: int
+    media_max_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class InstagramConfig:
+    access_token: str
+    ig_user_id: str
+    api_base_url: str
+    api_version: str
+    request_timeout: int
+    media_base_url: str
+    media_root: Path
+    status_poll_interval: int
+    status_poll_attempts: int
 
 
 @dataclass(frozen=True, slots=True)
 class TikTokConfig:
-    api_key: str
-    account_id: str
+    client_key: str
+    client_secret: str
+    refresh_token: str
     api_base_url: str
     request_timeout: int
     privacy_level: str
+    media_base_url: str
+    media_root: Path
+    disable_comment: bool
+    disable_duet: bool
+    disable_stitch: bool
+    auto_add_music: bool
+    chunk_size: int
+    status_poll_interval: int
+    status_poll_attempts: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +105,9 @@ class AppConfig:
     owner_id: int
     telegram_api: TelegramAPIConfig
     targets: tuple[PublishTarget, ...]
+    whatsapp_engine: WhatsAppEngine
     whatsapp: WhatsAppConfig | None
+    whatsapp_cloud: WhatsAppCloudConfig | None
     instagram: InstagramConfig | None
     tiktok: TikTokConfig | None
 
@@ -76,7 +118,8 @@ def load_config(
 ) -> AppConfig:
     load_environment(env_path)
     raw = _read_yaml(Path(config_path))
-    targets = tuple(_parse_targets(raw))
+    engine = _whatsapp_engine()
+    targets = tuple(_parse_targets(raw, engine))
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise ConfigError("TELEGRAM_BOT_TOKEN is required")
@@ -92,7 +135,9 @@ def load_config(
         raise ConfigError("TELEGRAM_OWNER_ID must be a positive integer")
 
     telegram_api = _telegram_api_config()
-    whatsapp = _whatsapp_config(raw)
+    has_whatsapp_targets = any(target.platform == "whatsapp" for target in targets)
+    whatsapp = _whatsapp_config(has_whatsapp_targets, engine)
+    whatsapp_cloud = _whatsapp_cloud_config(has_whatsapp_targets, engine)
     instagram = _instagram_config(raw)
     tiktok = _tiktok_config(raw)
     return AppConfig(
@@ -100,7 +145,9 @@ def load_config(
         owner_id=owner_id,
         telegram_api=telegram_api,
         targets=targets,
+        whatsapp_engine=engine,
         whatsapp=whatsapp,
+        whatsapp_cloud=whatsapp_cloud,
         instagram=instagram,
         tiktok=tiktok,
     )
@@ -121,7 +168,10 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
-def _parse_targets(raw: dict[str, Any]) -> list[PublishTarget]:
+def _parse_targets(
+    raw: dict[str, Any],
+    whatsapp_engine: WhatsAppEngine,
+) -> list[PublishTarget]:
     targets: list[PublishTarget] = []
 
     telegram = _optional_mapping(raw, "telegram")
@@ -136,12 +186,16 @@ def _parse_targets(raw: dict[str, Any]) -> list[PublishTarget]:
         )
 
     whatsapp = _optional_mapping(raw, "whatsapp")
-    for section, kind in (("groups", "group"), ("channels", "channel")):
+    for section, kind in (
+        ("groups", "group"),
+        ("channels", "channel"),
+        ("contacts", "contact"),
+    ):
         for item in _optional_list(whatsapp, section, "whatsapp"):
             targets.append(
                 PublishTarget(
                     platform="whatsapp",
-                    key=_whatsapp_jid(item, section, kind),
+                    key=_whatsapp_key(item, section, kind, whatsapp_engine),
                     kind=kind,
                     name=_required_string(item, "name", f"whatsapp.{section}"),
                 )
@@ -191,16 +245,45 @@ def _required_string(item: dict[str, Any], key: str, location: str) -> str:
     return value.strip()
 
 
-def _whatsapp_jid(
+def _whatsapp_key(
     item: dict[str, Any],
     section: str,
     kind: str,
+    engine: WhatsAppEngine,
 ) -> str:
-    jid = _required_string(item, "jid", f"whatsapp.{section}")
+    """Each engine names its recipients differently, so validate per engine."""
+    location = f"whatsapp.{section}"
+    if kind == "contact":
+        if engine != "cloud":
+            raise ConfigError(
+                "whatsapp.contacts requires WHATSAPP_ENGINE=cloud: "
+                "OpenWA targets are groups and channels"
+            )
+        return _whatsapp_phone_number(item, location)
+
+    if engine == "cloud":
+        if kind == "channel":
+            raise ConfigError(
+                "whatsapp.channels cannot be used with WHATSAPP_ENGINE=cloud: "
+                "WhatsApp Channels have no official API"
+            )
+        # Cloud group ids come from the Groups API and carry no @g.us suffix.
+        return _required_string(item, "jid", location)
+
+    jid = _required_string(item, "jid", location)
     expected_suffix = "@g.us" if kind == "group" else "@newsletter"
     if not jid.endswith(expected_suffix):
-        raise ConfigError(f"whatsapp.{section}.jid must end with {expected_suffix}")
+        raise ConfigError(f"{location}.jid must end with {expected_suffix}")
     return jid
+
+
+def _whatsapp_phone_number(item: dict[str, Any], location: str) -> str:
+    """Cloud API addresses a person by phone number in E.164 without the plus."""
+    raw = _required_string(item, "phone", location)
+    digits = raw.removeprefix("+").replace(" ", "").replace("-", "")
+    if not digits.isdigit():
+        raise ConfigError(f"{location}.phone must be a phone number in E.164 format")
+    return digits
 
 
 def _optional_bool(parent: dict[str, Any], key: str, location: str) -> bool:
@@ -215,26 +298,70 @@ def _instagram_config(raw: dict[str, Any]) -> InstagramConfig | None:
     if not _optional_bool(instagram, "enabled", "instagram"):
         return None
 
-    api_key, account_id, api_base_url, request_timeout = _zernio_connection(
-        "Instagram",
-        "ZERNIO_INSTAGRAM_ACCOUNT_ID",
+    api_base_url = _environment_url(
+        "INSTAGRAM_API_BASE_URL",
+        "https://graph.facebook.com",
     )
+    api_version = (
+        os.getenv("INSTAGRAM_API_VERSION", DEFAULT_GRAPH_API_VERSION).strip().strip("/")
+        or DEFAULT_GRAPH_API_VERSION
+    )
+    media_base_url, media_root = _public_media_settings("Instagram")
 
     return InstagramConfig(
-        api_key=api_key,
-        account_id=account_id,
+        access_token=_required_environment("INSTAGRAM_ACCESS_TOKEN", "Instagram"),
+        ig_user_id=_required_environment("INSTAGRAM_USER_ID", "Instagram"),
         api_base_url=api_base_url,
-        request_timeout=request_timeout,
+        api_version=api_version,
+        request_timeout=_environment_int("INSTAGRAM_REQUEST_TIMEOUT", 120),
+        media_base_url=media_base_url,
+        media_root=media_root,
+        status_poll_interval=_environment_int("INSTAGRAM_STATUS_POLL_INTERVAL", 5),
+        status_poll_attempts=_environment_int("INSTAGRAM_STATUS_POLL_ATTEMPTS", 60),
     )
 
 
-def _whatsapp_config(raw: dict[str, Any]) -> WhatsAppConfig | None:
-    whatsapp = _optional_mapping(raw, "whatsapp")
-    has_targets = bool(
-        _optional_list(whatsapp, "groups", "whatsapp")
-        or _optional_list(whatsapp, "channels", "whatsapp")
+def _whatsapp_engine() -> WhatsAppEngine:
+    engine = os.getenv("WHATSAPP_ENGINE", "openwa").strip().lower() or "openwa"
+    if engine not in WHATSAPP_ENGINES:
+        raise ConfigError(
+            "WHATSAPP_ENGINE must be one of: " + ", ".join(sorted(WHATSAPP_ENGINES))
+        )
+    return engine  # type: ignore[return-value]
+
+
+def _whatsapp_cloud_config(
+    has_targets: bool,
+    engine: WhatsAppEngine,
+) -> WhatsAppCloudConfig | None:
+    if not has_targets or engine != "cloud":
+        return None
+
+    api_version = (
+        os.getenv("WHATSAPP_API_VERSION", DEFAULT_GRAPH_API_VERSION).strip().strip("/")
+        or DEFAULT_GRAPH_API_VERSION
     )
-    if not has_targets:
+    return WhatsAppCloudConfig(
+        access_token=_required_environment("WHATSAPP_ACCESS_TOKEN", "WhatsApp Cloud"),
+        phone_number_id=_required_environment(
+            "WHATSAPP_PHONE_NUMBER_ID",
+            "WhatsApp Cloud",
+        ),
+        api_base_url=_environment_url(
+            "WHATSAPP_CLOUD_API_BASE_URL",
+            "https://graph.facebook.com",
+        ),
+        api_version=api_version,
+        request_timeout=_environment_int("WHATSAPP_REQUEST_TIMEOUT", 120),
+        media_max_bytes=_environment_int("WHATSAPP_MEDIA_MAX_BYTES", 16 * 1024**2),
+    )
+
+
+def _whatsapp_config(
+    has_targets: bool,
+    engine: WhatsAppEngine,
+) -> WhatsAppConfig | None:
+    if not has_targets or engine != "openwa":
         return None
 
     api_url = (
@@ -316,63 +443,81 @@ def _tiktok_config(raw: dict[str, Any]) -> TikTokConfig | None:
     if not _optional_bool(tiktok, "enabled", "tiktok"):
         return None
 
-    api_key, account_id, api_base_url, request_timeout = _zernio_connection(
-        "TikTok",
-        "ZERNIO_TIKTOK_ACCOUNT_ID",
-    )
-
     privacy_level = os.getenv(
-        "ZERNIO_TIKTOK_PRIVACY_LEVEL",
+        "TIKTOK_PRIVACY_LEVEL",
         "PUBLIC_TO_EVERYONE",
     ).strip()
-    allowed_privacy_levels = {
-        "PUBLIC_TO_EVERYONE",
-        "MUTUAL_FOLLOW_FRIENDS",
-        "FOLLOWER_OF_CREATOR",
-        "SELF_ONLY",
-    }
-    if privacy_level not in allowed_privacy_levels:
+    if privacy_level not in TIKTOK_PRIVACY_LEVELS:
         raise ConfigError(
-            "ZERNIO_TIKTOK_PRIVACY_LEVEL must be one of: "
-            + ", ".join(sorted(allowed_privacy_levels))
+            "TIKTOK_PRIVACY_LEVEL must be one of: "
+            + ", ".join(sorted(TIKTOK_PRIVACY_LEVELS))
         )
 
+    media_base_url, media_root = _public_media_settings("TikTok")
+    chunk_size = _environment_int("TIKTOK_UPLOAD_CHUNK_SIZE", 10 * 1024**2)
+    if not 5 * 1024**2 <= chunk_size <= 64 * 1024**2:
+        raise ConfigError("TIKTOK_UPLOAD_CHUNK_SIZE must be between 5 MB and 64 MB")
+
     return TikTokConfig(
-        api_key=api_key,
-        account_id=account_id,
-        api_base_url=api_base_url,
-        request_timeout=request_timeout,
+        client_key=_required_environment("TIKTOK_CLIENT_KEY", "TikTok"),
+        client_secret=_required_environment("TIKTOK_CLIENT_SECRET", "TikTok"),
+        refresh_token=_required_environment("TIKTOK_REFRESH_TOKEN", "TikTok"),
+        api_base_url=_environment_url(
+            "TIKTOK_API_BASE_URL",
+            "https://open.tiktokapis.com",
+        ),
+        request_timeout=_environment_int("TIKTOK_REQUEST_TIMEOUT", 300),
         privacy_level=privacy_level,
+        media_base_url=media_base_url,
+        media_root=media_root,
+        disable_comment=_environment_bool("TIKTOK_DISABLE_COMMENT", default=False),
+        disable_duet=_environment_bool("TIKTOK_DISABLE_DUET", default=False),
+        disable_stitch=_environment_bool("TIKTOK_DISABLE_STITCH", default=False),
+        auto_add_music=_environment_bool("TIKTOK_AUTO_ADD_MUSIC", default=True),
+        chunk_size=chunk_size,
+        status_poll_interval=_environment_int("TIKTOK_STATUS_POLL_INTERVAL", 5),
+        status_poll_attempts=_environment_int("TIKTOK_STATUS_POLL_ATTEMPTS", 60),
     )
 
 
-def _zernio_connection(
-    integration: str,
-    account_id_variable: str,
-) -> tuple[str, str, str, int]:
-    api_key = _required_environment("ZERNIO_API_KEY", integration)
-    account_id = _required_environment(account_id_variable, integration)
-    api_base_url = (
-        os.getenv("ZERNIO_API_BASE_URL", "https://zernio.com/api").strip().rstrip("/")
-        or "https://zernio.com/api"
-    )
-    if not api_base_url.startswith(("http://", "https://")):
-        raise ConfigError("ZERNIO_API_BASE_URL must use http:// or https://")
-
-    timeout_raw = os.getenv("ZERNIO_REQUEST_TIMEOUT", "120").strip()
-    try:
-        request_timeout = int(timeout_raw)
-    except ValueError as error:
-        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be an integer") from error
-    if request_timeout <= 0:
-        raise ConfigError("ZERNIO_REQUEST_TIMEOUT must be positive")
-    return api_key, account_id, api_base_url, request_timeout
+def _public_media_settings(integration: str) -> tuple[str, Path]:
+    """Instagram and TikTok photos are pulled from a public URL, never uploaded."""
+    media_base_url = os.getenv("MEDIA_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not media_base_url:
+        raise ConfigError(
+            f"MEDIA_PUBLIC_BASE_URL is required when {integration} is enabled: "
+            f"{integration} downloads media over a public HTTPS URL"
+        )
+    if not media_base_url.startswith("https://"):
+        raise ConfigError("MEDIA_PUBLIC_BASE_URL must use https://")
+    media_root = Path(os.getenv("MEDIA_ROOT", "media").strip() or "media")
+    return media_base_url, media_root
 
 
 def _required_environment(key: str, integration: str = "Instagram") -> str:
     value = os.getenv(key, "").strip()
     if not value:
         raise ConfigError(f"{key} is required when {integration} is enabled")
+    return value
+
+
+def _environment_int(key: str, default: int) -> int:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ConfigError(f"{key} must be an integer") from error
+    if value <= 0:
+        raise ConfigError(f"{key} must be positive")
+    return value
+
+
+def _environment_url(key: str, default: str) -> str:
+    value = os.getenv(key, default).strip().rstrip("/") or default
+    if not value.startswith(("http://", "https://")):
+        raise ConfigError(f"{key} must use http:// or https://")
     return value
 
 

@@ -16,6 +16,7 @@ x-app: &app
     WHATSAPP_API_URL: http://openwa:2785/api
     WHATSAPP_MEDIA_BASE_URL: http://media-server
     WHATSAPP_MEDIA_ROOT: /app/media
+    MEDIA_ROOT: /app/media
   volumes:
     - app_data:/app/data
     - app_media:/app/media
@@ -41,12 +42,17 @@ services:
       - chown -R 10001:10001 /app/data /app/media
     restart: "no"
 
+  # Instagram and TikTok pull media over the internet, so this server must be
+  # reachable at MEDIA_PUBLIC_BASE_URL. Terminate TLS on a reverse proxy in
+  # front of the published port; OpenWA keeps using it over the Docker network.
   media-server:
     image: nginx:alpine
     volumes:
       - app_media:/usr/share/nginx/html:ro
     expose:
       - "80"
+    ports:
+      - "${MEDIA_SERVER_BIND_HOST:-127.0.0.1}:${MEDIA_SERVER_PORT:-8080}:80"
     restart: unless-stopped
     logging:
       driver: json-file
@@ -54,6 +60,8 @@ services:
         max-size: 10m
         max-file: "3"
 
+  # Нужен только при WHATSAPP_ENGINE=openwa. Для cloud сервис можно не поднимать:
+  # docker compose up -d --scale openwa=0
   openwa:
     image: ghcr.io/rmyndharis/openwa:0.11.1
     environment:
@@ -166,6 +174,8 @@ services:
         condition: service_healthy
       openwa:
         condition: service_healthy
+        # Позволяет запускать worker без OpenWA при WHATSAPP_ENGINE=cloud.
+        required: false
     healthcheck:
       test:
         - CMD-SHELL

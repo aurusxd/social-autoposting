@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import mimetypes
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
 
 import aiohttp
 from loguru import logger
@@ -16,80 +15,79 @@ from app.publishers.base import (
     PublishResult,
     PublishTarget,
 )
-from app.publishers.zernio_client import (
-    RETRYABLE_HTTP_STATUSES,
-    ZernioHTTPError,
-    external_id,
+from app.publishers.graph_client import (
+    GraphAPIError,
     request_json,
+    required_response_string,
     safe_error,
-    upload_media,
 )
+from app.publishers.public_media import absolute_path, media_path, public_url
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 INSTAGRAM_CAPTION_LIMIT = 2200
 INSTAGRAM_CAROUSEL_LIMIT = 10
 INSTAGRAM_PHOTO_MAX_SIZE = 8 * 1024**2
-INSTAGRAM_VIDEO_MAX_SIZE = 300 * 1024**2
+INSTAGRAM_VIDEO_MAX_SIZE = 1024**3
 INSTAGRAM_STORY_VIDEO_MAX_SIZE = 100 * 1024**2
-SUPPORTED_PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png"}
+SUPPORTED_PHOTO_SUFFIXES = {".jpg", ".jpeg"}
 SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mov"}
 
 
 class InstagramPublisher:
+    """Publishes through the official Instagram Graph content publishing API."""
+
     platform = "instagram"
 
     def __init__(
         self,
-        api_key: str,
-        account_id: str,
-        api_base_url: str = "https://zernio.com/api",
+        access_token: str,
+        ig_user_id: str,
+        media_base_url: str,
+        media_root: str | Path = "media",
+        api_base_url: str = "https://graph.facebook.com",
+        api_version: str = "v25.0",
         request_timeout: int = 120,
+        status_poll_interval: int = 5,
+        status_poll_attempts: int = 60,
         session_factory: Callable[..., aiohttp.ClientSession] = aiohttp.ClientSession,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        self.api_key = api_key
-        self.account_id = account_id
+        self.access_token = access_token
+        self.ig_user_id = ig_user_id
+        self.media_base_url = media_base_url.rstrip("/")
+        self.media_root = absolute_path(Path(media_root)).resolve()
         self.api_base_url = api_base_url.rstrip("/")
+        self.api_version = api_version.strip("/")
         self.request_timeout = request_timeout
+        self.status_poll_interval = status_poll_interval
+        self.status_poll_attempts = status_poll_attempts
         self.session_factory = session_factory
+        self.sleep = sleep
+
+    @property
+    def account_url(self) -> str:
+        return f"{self.api_base_url}/{self.api_version}/{self.ig_user_id}"
 
     async def publish(self, post: Post, target: PublishTarget) -> PublishResult:
         try:
             media_files = _validate_post(post, target)
             timeout = aiohttp.ClientTimeout(total=self.request_timeout)
             async with self.session_factory(timeout=timeout) as session:
-                media_items = []
-                for media in media_files:
-                    path = _media_path(media)
-                    media_items.append(
-                        await upload_media(
-                            session,
-                            api_key=self.api_key,
-                            api_base_url=self.api_base_url,
-                            media=media,
-                            path=path,
-                            content_type=_content_type(path, media.media_type),
-                        )
-                    )
-                response = await self._create_post(
+                container_id = await self._build_container(
                     session,
                     post,
                     target,
-                    media_items,
+                    media_files,
                 )
-            post_id = external_id(response)
-        except ZernioHTTPError as error:
+                media_id = await self._publish_container(session, container_id)
+        except GraphAPIError as error:
             return PublishResult(
                 success=False,
-                retryable=error.status in RETRYABLE_HTTP_STATUSES,
+                retryable=error.retryable,
                 error=str(error),
                 retry_after=error.retry_after,
             )
         except (aiohttp.ClientError, TimeoutError) as error:
-            return PublishResult(
-                success=False,
-                retryable=True,
-                error=safe_error(error),
-            )
+            return PublishResult(success=False, retryable=True, error=safe_error(error))
         except (OSError, PublisherError, ValueError) as error:
             return PublishResult(
                 success=False,
@@ -97,56 +95,159 @@ class InstagramPublisher:
                 error=safe_error(error),
             )
         except Exception as error:
-            logger.exception("Unexpected Instagram/Zernio publisher error")
-            return PublishResult(
-                success=False,
-                retryable=True,
-                error=safe_error(error),
-            )
+            logger.exception("Unexpected Instagram publisher error")
+            return PublishResult(success=False, retryable=True, error=safe_error(error))
 
-        return PublishResult(success=True, external_id=post_id)
+        return PublishResult(success=True, external_id=media_id)
 
-    async def _create_post(
+    async def _build_container(
         self,
         session: aiohttp.ClientSession,
         post: Post,
         target: PublishTarget,
-        media_items: list[dict[str, str]],
-    ) -> dict[str, Any]:
-        platform: dict[str, Any] = {
-            "platform": "instagram",
-            "accountId": self.account_id,
-        }
+        media_files: tuple[MediaFile, ...],
+    ) -> str:
+        caption = (post.caption or "").strip()
+
         if target.kind == "story":
-            platform["platformSpecificData"] = {"contentType": "story"}
-        elif len(media_items) == 1 and media_items[0]["type"] == "video":
-            platform["platformSpecificData"] = {"shareToFeed": True}
-
-        payload: dict[str, Any] = {
-            "mediaItems": media_items,
-            "platforms": [platform],
-            "publishNow": True,
-        }
-        if target.kind == "feed" and post.caption:
-            payload["content"] = post.caption
-
-        request_id = str(
-            uuid5(
-                NAMESPACE_URL,
-                "social-autoposting:zernio:instagram:"
-                f"{self.account_id}:{post.id}:{target.kind}",
+            return await self._create_container(
+                session,
+                media_files[0],
+                media_type="STORIES",
             )
+
+        if len(media_files) == 1:
+            media = media_files[0]
+            if media.media_type == "video":
+                return await self._create_container(
+                    session,
+                    media,
+                    media_type="REELS",
+                    caption=caption,
+                    extra={"share_to_feed": "true"},
+                )
+            return await self._create_container(
+                session,
+                media,
+                media_type="IMAGE",
+                caption=caption,
+            )
+
+        children = []
+        for media in media_files:
+            children.append(
+                await self._create_container(
+                    session,
+                    media,
+                    # REELS cannot be a carousel item; plain VIDEO can.
+                    media_type="IMAGE" if media.media_type == "photo" else "VIDEO",
+                    extra={"is_carousel_item": "true"},
+                )
+            )
+
+        return await self._create_carousel(session, children, caption)
+
+    async def _create_container(
+        self,
+        session: aiohttp.ClientSession,
+        media: MediaFile,
+        *,
+        media_type: str,
+        caption: str = "",
+        extra: dict[str, str] | None = None,
+    ) -> str:
+        path = media_path(media)
+        url = public_url(
+            path,
+            media_base_url=self.media_base_url,
+            media_root=self.media_root,
+            platform="Instagram",
         )
-        return await request_json(
+        payload: dict[str, str] = {"media_type": media_type}
+        payload["image_url" if media.media_type == "photo" else "video_url"] = url
+        if caption:
+            payload["caption"] = caption
+        if extra:
+            payload.update(extra)
+
+        response = await request_json(
             session,
             "POST",
-            f"{self.api_base_url}/v1/posts",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "x-request-id": request_id,
-            },
+            f"{self.account_url}/media",
+            access_token=self.access_token,
+            data=payload,
         )
+        container_id = required_response_string(response, "id")
+        await self._wait_for_container(session, container_id)
+        return container_id
+
+    async def _create_carousel(
+        self,
+        session: aiohttp.ClientSession,
+        children: list[str],
+        caption: str,
+    ) -> str:
+        payload: dict[str, str] = {
+            "media_type": "CAROUSEL",
+            "children": ",".join(children),
+        }
+        if caption:
+            payload["caption"] = caption
+
+        response = await request_json(
+            session,
+            "POST",
+            f"{self.account_url}/media",
+            access_token=self.access_token,
+            data=payload,
+        )
+        container_id = required_response_string(response, "id")
+        await self._wait_for_container(session, container_id)
+        return container_id
+
+    async def _wait_for_container(
+        self,
+        session: aiohttp.ClientSession,
+        container_id: str,
+    ) -> None:
+        """Poll the container until Instagram finished transcoding the media."""
+        for attempt in range(self.status_poll_attempts):
+            response = await request_json(
+                session,
+                "GET",
+                f"{self.api_base_url}/{self.api_version}/{container_id}",
+                access_token=self.access_token,
+                params={"fields": "status_code,status"},
+            )
+            status_code = response.get("status_code")
+            if status_code == "FINISHED":
+                return
+            if status_code in {"ERROR", "EXPIRED"}:
+                raise PublisherError(
+                    f"Instagram container {container_id} is {status_code}: "
+                    f"{response.get('status') or 'no details'}"
+                )
+            if attempt + 1 < self.status_poll_attempts:
+                await self.sleep(self.status_poll_interval)
+
+        raise PublisherError(
+            f"Instagram container {container_id} was not ready in "
+            f"{self.status_poll_interval * self.status_poll_attempts} seconds"
+        )
+
+    async def _publish_container(
+        self,
+        session: aiohttp.ClientSession,
+        container_id: str,
+    ) -> str:
+        response: dict[str, Any] = await request_json(
+            session,
+            "POST",
+            f"{self.account_url}/media_publish",
+            access_token=self.access_token,
+            data={"creation_id": container_id},
+        )
+        return required_response_string(response, "id")
 
 
 def _validate_post(post: Post, target: PublishTarget) -> tuple[MediaFile, ...]:
@@ -166,14 +267,14 @@ def _validate_post(post: Post, target: PublishTarget) -> tuple[MediaFile, ...]:
         )
 
     for media in media_files:
-        path = _media_path(media)
+        path = media_path(media)
         if not path.is_file():
             raise PublisherError(f"Instagram media file does not exist: {path.name}")
         size = path.stat().st_size
         suffix = path.suffix.lower()
         if media.media_type == "photo":
             if suffix not in SUPPORTED_PHOTO_SUFFIXES:
-                raise PublisherError("Instagram photos must use JPG or PNG format")
+                raise PublisherError("Instagram photos must use JPEG format")
             if size > INSTAGRAM_PHOTO_MAX_SIZE:
                 raise PublisherError("Instagram photos must not exceed 8 MB")
         elif media.media_type == "video":
@@ -185,7 +286,7 @@ def _validate_post(post: Post, target: PublishTarget) -> tuple[MediaFile, ...]:
                 else INSTAGRAM_VIDEO_MAX_SIZE
             )
             if size > size_limit:
-                limit = 100 if target.kind == "story" else 300
+                limit = 100 if target.kind == "story" else 1024
                 raise PublisherError(
                     f"Instagram {target.kind} videos must not exceed {limit} MB"
                 )
@@ -194,25 +295,3 @@ def _validate_post(post: Post, target: PublishTarget) -> tuple[MediaFile, ...]:
                 f"Unsupported Instagram media type: {media.media_type}"
             )
     return media_files
-
-
-def _media_path(media: MediaFile) -> Path:
-    path = Path(media.file_path)
-    return path if path.is_absolute() else PROJECT_ROOT / path
-
-
-def _content_type(path: Path, media_type: str) -> str:
-    known_types = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".mp4": "video/mp4",
-        ".mov": "video/quicktime",
-    }
-    guessed = known_types.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0]
-    if guessed is None:
-        raise PublisherError(f"Cannot detect Instagram media type: {path.name}")
-    expected_prefix = "image/" if media_type == "photo" else "video/"
-    if not guessed.startswith(expected_prefix):
-        raise PublisherError(f"Invalid Instagram media type for {path.name}")
-    return guessed

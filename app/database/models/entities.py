@@ -88,3 +88,20 @@ class PublishJob(Base):
     )
 
     post: Mapped[Post] = relationship(back_populates="publish_jobs")
+
+
+class OAuthToken(Base):
+    """Rotating OAuth credentials for platforms that expire access tokens."""
+
+    __tablename__ = "oauth_tokens"
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    access_token: Mapped[str | None] = mapped_column(Text)
+    refresh_token: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

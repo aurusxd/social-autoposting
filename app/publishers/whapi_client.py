@@ -116,7 +116,11 @@ def retry_after(response: aiohttp.ClientResponse) -> int | None:
 
 
 def message_id(payload: dict[str, Any]) -> str:
-    """Whapi wraps the sent message in `message`, older routes return it flat."""
+    """Whapi answers with {"sent": true, "message": {"id": ...}}."""
+    if payload.get("sent") is False:
+        # A message object may still be present, so never trust the id alone.
+        raise PublisherError("Whapi accepted the request but did not send it")
+
     message = payload.get("message")
     if isinstance(message, dict):
         value = message.get("id")

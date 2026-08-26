@@ -53,6 +53,7 @@ class FakeSession:
     def __init__(self, status: int = 200) -> None:
         self.status = status
         self.urls: list[str] = []
+        self.params: list[dict[str, Any]] = []
 
     async def __aenter__(self) -> FakeSession:
         return self
@@ -60,8 +61,9 @@ class FakeSession:
     async def __aexit__(self, *_: Any) -> None:
         return None
 
-    async def request(self, method: str, url: str, **_: Any) -> FakeResponse:
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.urls.append(url)
+        self.params.append(kwargs.get("params", {}))
         if self.status != 200:
             return FakeResponse(self.status, {"error": {"message": "nope"}})
         payload = GROUPS if url.endswith("/groups") else NEWSLETTERS
@@ -117,12 +119,41 @@ def test_groups_and_admin_channels_are_merged_with_static_targets() -> None:
 
     assert [(t.platform, t.kind, t.name) for t in resolved.targets] == [
         ("telegram", "channel", "Основной"),
-        ("whatsapp", "group", "Клиенты"),
-        ("whatsapp", "group", "Партнёры"),
         ("whatsapp", "channel", "Наш канал"),
         ("whatsapp", "channel", "Второй"),
+        ("whatsapp", "group", "Клиенты"),
+        ("whatsapp", "group", "Партнёры"),
     ]
     assert not resolved.whatsapp_failed
+
+
+def test_truncation_never_drops_every_channel() -> None:
+    session = FakeSession()
+
+    resolved = asyncio.run(
+        resolve_targets(
+            _config(target_limit=1),
+            session_factory=_session_factory(session),
+        )
+    )
+
+    kinds = [t.kind for t in resolved.targets if t.platform == "whatsapp"]
+    # Groups are many and channels are few, so channels must survive the cut.
+    assert kinds == ["channel"]
+    assert resolved.truncated
+
+
+def test_the_fetch_asks_for_no_more_than_the_limit() -> None:
+    session = FakeSession()
+
+    asyncio.run(
+        resolve_targets(
+            _config(target_limit=7),
+            session_factory=_session_factory(session),
+        )
+    )
+
+    assert session.params == [{"count": 7}, {"count": 7}]
 
 
 def test_channels_without_posting_rights_are_skipped() -> None:
@@ -224,3 +255,26 @@ def test_cache_expires_after_the_ttl() -> None:
     )
 
     assert len(session.urls) == 4
+
+
+def test_stub_newsletters_response_yields_no_channels() -> None:
+    class StubNewsletters(FakeSession):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            self.urls.append(url)
+            self.params.append(kwargs.get("params", {}))
+            if url.endswith("/newsletters"):
+                # What the live API returns when the account has no channels.
+                return FakeResponse(200, {"code": 200})
+            return FakeResponse(200, GROUPS)
+
+    session = StubNewsletters()
+
+    resolved = asyncio.run(
+        resolve_targets(_config(), session_factory=_session_factory(session))
+    )
+
+    assert not resolved.whatsapp_failed
+    assert [t.kind for t in resolved.targets if t.platform == "whatsapp"] == [
+        "group",
+        "group",
+    ]

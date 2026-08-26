@@ -292,3 +292,38 @@ def test_empty_post_is_rejected() -> None:
 
     assert not result.success
     assert not session.calls
+
+
+def test_not_sent_flag_is_treated_as_a_failure() -> None:
+    session = FakeSession(
+        FakeResponse(200, {"sent": False, "message": {"id": "wamid.ghost"}})
+    )
+    publisher = _publisher(session)
+
+    result = asyncio.run(publisher.publish(Post(id=15, caption="Привет"), _group()))
+
+    assert not result.success
+    assert not result.retryable
+
+
+def test_real_response_envelope_is_parsed() -> None:
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "sent": True,
+                "message": {
+                    "id": "Psq6DY4sHbmu8As-wY4SbM0UnQ",
+                    "from_me": True,
+                    "type": "text",
+                    "chat_id": "79134790813@c.us",
+                },
+            },
+        )
+    )
+    publisher = _publisher(session)
+
+    result = asyncio.run(publisher.publish(Post(id=16, caption="Привет"), _group()))
+
+    assert result.success
+    assert result.external_id == "Psq6DY4sHbmu8As-wY4SbM0UnQ"

@@ -100,6 +100,7 @@ async def _fetch_whatsapp_targets(
             "GET",
             f"{config.api_url}/groups",
             token=config.api_token,
+            params={"count": config.target_limit},
         )
         newsletters = await request_json(
             session,
@@ -109,9 +110,11 @@ async def _fetch_whatsapp_targets(
             params={"count": config.target_limit},
         )
 
+    # Channels come first: an account is admin of few of them, while groups can
+    # be numerous, and truncating the tail must never drop every channel.
     targets = [
-        *_groups_to_targets(groups),
         *_newsletters_to_targets(newsletters),
+        *_groups_to_targets(groups),
     ]
     truncated = len(targets) > config.target_limit
     return tuple(targets[: config.target_limit]), truncated
@@ -135,6 +138,16 @@ def _groups_to_targets(payload: dict[str, Any]) -> list[PublishTarget]:
 
 
 def _newsletters_to_targets(payload: dict[str, Any]) -> list[PublishTarget]:
+    if "newsletters" not in payload:
+        # Whapi answers with a bare {"code": 200} when the account has no
+        # channels at all — notably for numbers in regions where WhatsApp does
+        # not offer Channels. Groups still work, so this is not a failure.
+        logger.info(
+            "Whapi reported no WhatsApp channels for this account; "
+            "only groups will be offered"
+        )
+        return []
+
     targets = []
     for item in _items(payload, "newsletters"):
         chat_id = _text(item, "id")

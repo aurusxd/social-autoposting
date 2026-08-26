@@ -4,6 +4,7 @@ from html import escape
 
 from app.bot.models import PostDraft
 from app.core.config import PublishTarget
+from app.services.target_registry import ResolvedTargets
 
 
 def welcome_text() -> str:
@@ -33,12 +34,26 @@ def draft_text(draft: PostDraft) -> str:
     return "\n\n".join(parts)
 
 
-def targets_text(selected_count: int) -> str:
-    return (
-        "<b>Куда опубликовать?</b>\n\n"
+def targets_text(
+    selected_count: int,
+    resolved: ResolvedTargets | None = None,
+) -> str:
+    parts = [
+        "<b>Куда опубликовать?</b>",
         "Нажимайте на площадки, чтобы включать или выключать их. "
-        f"Сейчас выбрано: <b>{selected_count}</b>."
-    )
+        f"Сейчас выбрано: <b>{selected_count}</b>.",
+    ]
+    if resolved is not None and resolved.whatsapp_failed:
+        parts.append(
+            "⚠️ Не удалось получить чаты WhatsApp — показаны только остальные "
+            "площадки. Проверьте инстанс Whapi и нажмите «Обновить список»."
+        )
+    if resolved is not None and resolved.truncated:
+        parts.append(
+            "⚠️ Чатов больше, чем помещается в список. Увеличьте "
+            "<code>WHATSAPP_TARGET_LIMIT</code>, если нужного нет."
+        )
+    return "\n\n".join(parts)
 
 
 def review_text(

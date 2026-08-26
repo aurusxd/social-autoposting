@@ -4,12 +4,8 @@ telegram:
       name: "Основной канал"
 
 whatsapp:
-  groups:
-    - jid: "1234567890-123456@g.us"
-      name: "Группа клиентов"
-  channels:
-    - jid: "1234567890@newsletter"
-      name: "WA-канал"
+  # Groups and channels are read from Whapi at runtime
+  enabled: true
 
 instagram:
   enabled: true

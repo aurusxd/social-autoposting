@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from app.core.config import PublishTarget
+
 MediaType = Literal["photo", "video"]
 
 
@@ -75,3 +77,50 @@ def toggle_index(selected: set[int], index: int, total: int) -> set[int]:
     else:
         updated.add(index)
     return updated
+
+
+def targets_to_data(targets: tuple[PublishTarget, ...]) -> list[dict[str, str]]:
+    return [
+        {
+            "platform": target.platform,
+            "key": target.key,
+            "kind": target.kind,
+            "name": target.name,
+        }
+        for target in targets
+    ]
+
+
+def targets_from_data(value: list[Any] | None) -> tuple[PublishTarget, ...]:
+    if not value:
+        return ()
+    return tuple(
+        PublishTarget(
+            platform=item["platform"],
+            key=item["key"],
+            kind=item["kind"],
+            name=item["name"],
+        )
+        for item in value
+        if isinstance(item, dict)
+    )
+
+
+def target_identity(target: PublishTarget) -> tuple[str, str, str]:
+    return (target.platform, target.kind, target.key)
+
+
+def remap_selection(
+    previous: tuple[PublishTarget, ...],
+    selected: set[int],
+    current: tuple[PublishTarget, ...],
+) -> set[int]:
+    """Carry a selection across a refresh by identity, since indexes shift."""
+    chosen = {
+        target_identity(previous[index]) for index in selected if index < len(previous)
+    }
+    return {
+        index
+        for index, target in enumerate(current)
+        if target_identity(target) in chosen
+    }

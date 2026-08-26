@@ -20,13 +20,21 @@ from app.bot.keyboards import (
     review_keyboard,
     targets_keyboard,
 )
-from app.bot.models import DraftMedia, PostDraft, toggle_index
+from app.bot.models import (
+    DraftMedia,
+    PostDraft,
+    remap_selection,
+    targets_from_data,
+    targets_to_data,
+    toggle_index,
+)
 from app.bot.states import BotFlow
 from app.bot.views import draft_text, review_text, targets_text, welcome_text
 from app.core.config import AppConfig
 from app.services.dispatch_service import dispatch_jobs
 from app.services.media_storage import delete_draft_media, download_telegram_media
 from app.services.submission_service import SubmissionError, save_submission
+from app.services.target_registry import resolve_targets
 
 router = Router(name="telegram-ui")
 
@@ -117,18 +125,55 @@ async def open_targets(
     if not draft.has_content:
         await callback.answer("Сначала добавьте контент", show_alert=True)
         return
-    if not app_config.targets:
-        await callback.answer("В config.yaml нет доступных площадок", show_alert=True)
+    resolved = await resolve_targets(app_config)
+    if not resolved.targets:
+        await callback.answer("Нет доступных площадок", show_alert=True)
         return
 
-    selected = _selected_from_data(data)
+    # The chat list may have changed since the previous visit, so move the
+    # selection across by identity instead of trusting the old indexes.
+    selected = remap_selection(
+        targets_from_data(data.get("targets")),
+        _selected_from_data(data),
+        resolved.targets,
+    )
+    await state.update_data(
+        targets=targets_to_data(resolved.targets),
+        selected=sorted(selected),
+    )
     await state.set_state(BotFlow.selecting_targets)
     await _edit_callback_message(
         callback,
-        targets_text(len(selected)),
-        targets_keyboard(app_config.targets, selected),
+        targets_text(len(selected), resolved),
+        targets_keyboard(resolved.targets, selected),
     )
     await callback.answer()
+
+
+@router.callback_query(ReviewAction.filter(F.action == "refresh"))
+async def refresh_targets(
+    callback: CallbackQuery,
+    state: FSMContext,
+    app_config: AppConfig,
+) -> None:
+    data = await state.get_data()
+    previous = targets_from_data(data.get("targets"))
+    resolved = await resolve_targets(app_config, refresh=True)
+    if not resolved.targets:
+        await callback.answer("Нет доступных площадок", show_alert=True)
+        return
+
+    selected = remap_selection(previous, _selected_from_data(data), resolved.targets)
+    await state.update_data(
+        targets=targets_to_data(resolved.targets),
+        selected=sorted(selected),
+    )
+    await _edit_callback_message(
+        callback,
+        targets_text(len(selected), resolved),
+        targets_keyboard(resolved.targets, selected),
+    )
+    await callback.answer("Список обновлён")
 
 
 @router.callback_query(DraftAction.filter(F.action == "discard"))
@@ -146,12 +191,12 @@ async def toggle_target(
     callback: CallbackQuery,
     callback_data: TargetAction,
     state: FSMContext,
-    app_config: AppConfig,
 ) -> None:
     data = await state.get_data()
+    targets = targets_from_data(data.get("targets"))
     selected = _selected_from_data(data)
     try:
-        selected = toggle_index(selected, callback_data.index, len(app_config.targets))
+        selected = toggle_index(selected, callback_data.index, len(targets))
     except IndexError:
         await callback.answer(
             "Список площадок изменился. Откройте его заново.", show_alert=True
@@ -161,27 +206,24 @@ async def toggle_target(
     await _edit_callback_message(
         callback,
         targets_text(len(selected)),
-        targets_keyboard(app_config.targets, selected),
+        targets_keyboard(targets, selected),
     )
     await callback.answer()
 
 
 @router.callback_query(ReviewAction.filter(F.action == "open"))
-async def open_review(
-    callback: CallbackQuery,
-    state: FSMContext,
-    app_config: AppConfig,
-) -> None:
+async def open_review(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     selected = _selected_from_data(data)
     if not selected:
         await callback.answer("Выберите хотя бы одну площадку", show_alert=True)
         return
+    targets = targets_from_data(data.get("targets"))
     draft = PostDraft.from_dict(data.get("draft"))
     await state.set_state(BotFlow.reviewing)
     await _edit_callback_message(
         callback,
-        review_text(draft, app_config.targets, selected),
+        review_text(draft, targets, selected),
         review_keyboard(),
     )
     await callback.answer()
@@ -197,18 +239,15 @@ async def back_to_draft(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(ReviewAction.filter(F.action == "targets"))
-async def back_to_targets(
-    callback: CallbackQuery,
-    state: FSMContext,
-    app_config: AppConfig,
-) -> None:
+async def back_to_targets(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    targets = targets_from_data(data.get("targets"))
     selected = _selected_from_data(data)
     await state.set_state(BotFlow.selecting_targets)
     await _edit_callback_message(
         callback,
         targets_text(len(selected)),
-        targets_keyboard(app_config.targets, selected),
+        targets_keyboard(targets, selected),
     )
     await callback.answer()
 
@@ -224,18 +263,15 @@ async def cancel_from_button(callback: CallbackQuery, state: FSMContext) -> None
 
 
 @router.callback_query(ReviewAction.filter(F.action == "submit"))
-async def submit_draft(
-    callback: CallbackQuery,
-    state: FSMContext,
-    app_config: AppConfig,
-) -> None:
+async def submit_draft(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     selected = _selected_from_data(data)
     if not selected:
         await callback.answer("Выберите хотя бы одну площадку", show_alert=True)
         return
+    snapshot = targets_from_data(data.get("targets"))
     try:
-        targets = tuple(app_config.targets[index] for index in sorted(selected))
+        targets = tuple(snapshot[index] for index in sorted(selected))
     except IndexError:
         await callback.answer(
             "Список площадок изменился. Выберите цели заново.",
@@ -259,9 +295,7 @@ async def submit_draft(
 
     dispatch_result = await asyncio.to_thread(dispatch_jobs, submission.job_ids)
 
-    names = "\n".join(
-        f"• {escape(app_config.targets[index].name)}" for index in sorted(selected)
-    )
+    names = "\n".join(f"• {escape(target.name)}" for target in targets)
     dispatch_text = (
         "Задания переданы Celery worker."
         if not dispatch_result.failed

@@ -55,6 +55,12 @@ def targets_keyboard(
     )
     builder.row(
         InlineKeyboardButton(
+            text="🔄 Обновить список",
+            callback_data=ReviewAction(action="refresh").pack(),
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
             text="← К черновику",
             callback_data=ReviewAction(action="draft").pack(),
         ),
@@ -94,4 +100,8 @@ def _target_label(target: PublishTarget) -> str:
         "instagram": "📸",
         "tiktok": "🎵",
     }
-    return f"{platform_icons[target.platform]} {target.name}"
+    icon = platform_icons.get(target.platform, "•")
+    if target.platform == "whatsapp":
+        # Groups and channels behave differently, so they must not look alike.
+        icon = "👥" if target.kind == "group" else "📣"
+    return f"{icon} {target.name}"

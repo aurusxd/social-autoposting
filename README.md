@@ -36,57 +36,63 @@ Telegram-каналы, выбранные WhatsApp-группы/каналы, In
 
 Команды бота: `/start`, `/new`, `/cancel`.
 
-## WhatsApp через OpenWA
+## WhatsApp через Whapi.Cloud
 
-Публикатор отправляет текст, JPG/PNG/GIF/WebP и MP4/3GP в выбранные группы
+Публикатор отправляет текст, JPG/PNG/GIF/WebP и MP4/3GP в группы
 (`...@g.us`) и каналы (`...@newsletter`). Несколько медиа отправляются по
 очереди, подпись прикрепляется к первому файлу. Подпись длиннее 1024 символов
 сначала отправляется отдельным текстовым сообщением. Если часть поста уже
 отправлена, автоматический повтор отключается, чтобы не создавать дубли.
 
-OpenWA использует неофициальные WhatsApp-клиенты. Всегда остаётся риск
-ограничения или блокировки номера; используйте отдельный номер и не делайте
-массовые рассылки незнакомым получателям. Compose по умолчанию включает Baileys,
-потому что `whatsapp-web.js` сейчас не умеет отправлять медиа в каналы. Если
-нужны только группы и важнее снизить риск, установите
-`OPENWA_ENGINE_TYPE=whatsapp-web.js`.
+Списки групп и каналов **не хранятся в `config.yaml`** — бот запрашивает их у
+Whapi при каждом открытии выбора площадок и показывает галочками. Достаточно
+включить площадку:
+
+```yaml
+whatsapp:
+  enabled: true
+```
+
+Whapi.Cloud работает поверх неофициального протокола WhatsApp Web. Остаётся риск
+ограничения номера; используйте отдельный номер и не делайте массовые рассылки
+незнакомым получателям.
 
 Первичная настройка:
 
-1. Создайте ключ длиной не менее 32 символов и сохраните его в
-   `WHATSAPP_API_KEY`:
+1. Зарегистрируйтесь на <https://whapi.cloud>, создайте инстанс и привяжите
+   номер по QR-коду в их консоли.
+2. Скопируйте токен инстанса в `WHAPI_API_TOKEN` внутри `.env`.
+3. Проверьте состояние инстанса:
 
-   ```powershell
-   .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"
+   ```bash
+   curl -H "Authorization: Bearer $WHAPI_API_TOKEN" https://gate.whapi.cloud/health
    ```
 
-2. Запустите OpenWA: `docker compose up -d openwa`.
-3. Откройте `http://127.0.0.1:2785`, введите API-ключ, создайте сессию
-   `social-autoposting`, запустите её и отсканируйте QR-код в WhatsApp.
-4. Скопируйте UUID сессии в `WHATSAPP_SESSION_ID` внутри `.env`.
-5. Получите ID групп через `GET /api/sessions/{sessionId}/groups`. ID канала
-   можно получить из ответа `POST /api/sessions/{sessionId}/channels/subscribe`
-   с его invite-кодом. Запишите нужные JID и названия в `config.yaml`.
-6. Перезапустите приложение: `docker compose up -d --build`.
+   Поле `status.text` должно быть `AUTH` или `LAUNCH`.
+4. Поставьте `whatsapp.enabled: true` в `config.yaml`.
+5. Перезапустите приложение: `docker compose up -d --build`.
 
 Основные настройки:
 
 ```dotenv
-WHATSAPP_API_URL=http://localhost:2785/api
-WHATSAPP_API_KEY=
-WHATSAPP_SESSION_ID=
-WHATSAPP_REQUEST_TIMEOUT=120
-WHATSAPP_MEDIA_MAX_BYTES=104857600
-OPENWA_ENGINE_TYPE=baileys
-OPENWA_BIND_HOST=127.0.0.1
-OPENWA_PORT=2785
+WHAPI_API_TOKEN=
+WHAPI_API_URL=https://gate.whapi.cloud
+WHAPI_REQUEST_TIMEOUT=120
+WHAPI_MEDIA_MAX_BYTES=104857600
+WHATSAPP_TARGET_LIMIT=50
 ```
 
-В Docker медиа передаются по закрытому `media-server` внутри сети Compose, без
-Base64 и без публикации файлов наружу. При нативном запуске без
-`WHATSAPP_MEDIA_BASE_URL` используется Base64. Порт панели OpenWA по умолчанию
-доступен только на localhost; для удалённого сервера используйте SSH-туннель,
-а не открывайте HTTP API в интернет.
+Медиа уходят прямо в Whapi multipart-запросом, поэтому публичный URL для файлов
+не нужен и отдельный медиа-сервер в Compose не поднимается.
+
+Ограничения каналов:
+
+- в списке появляются только каналы, где аккаунт — владелец или админ;
+  подписчик публиковать не может;
+- каналы WhatsApp недоступны пользователям в РФ — это ограничение самого
+  мессенджера, а не провайдера;
+- если чатов больше `WHATSAPP_TARGET_LIMIT`, список обрезается и бот
+  предупреждает об этом.
 
 ## Instagram через Zernio
 
@@ -208,10 +214,10 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Compose запускает локальные Telegram Bot API, OpenWA, внутреннюю раздачу медиа
-и Redis, применяет Alembic-миграции, затем запускает Celery worker и
-Telegram-бота. Внутренние API, media-server и Redis не публикуются наружу;
-панель OpenWA привязана к `127.0.0.1`. SQLite, медиа, сессии WhatsApp, данные
+Compose запускает локальный Telegram Bot API и Redis, применяет
+Alembic-миграции, затем запускает Celery worker и Telegram-бота. WhatsApp
+обслуживает облачный Whapi.Cloud, поэтому отдельных контейнеров под него нет.
+Внутренний Telegram API и Redis наружу не публикуются. SQLite, медиа, данные
 Redis и локального Telegram API сохраняются в именованных volumes и переживают
 пересоздание контейнеров.
 

@@ -9,8 +9,7 @@ from app.core.config import ConfigError, load_config
 def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_OWNER_ID", "12345")
-    monkeypatch.setenv("WHATSAPP_API_KEY", "w" * 32)
-    monkeypatch.setenv("WHATSAPP_SESSION_ID", "whatsapp-session")
+    monkeypatch.setenv("WHAPI_API_TOKEN", "whapi-token")
     monkeypatch.setenv("ZERNIO_API_KEY", "zernio-key")
     monkeypatch.setenv("ZERNIO_INSTAGRAM_ACCOUNT_ID", "instagram-account")
     monkeypatch.setenv("ZERNIO_TIKTOK_ACCOUNT_ID", "tiktok-account")
@@ -34,9 +33,7 @@ telegram:
     - id: "-1001"
       name: "Новости"
 whatsapp:
-  groups:
-    - jid: "group@g.us"
-      name: "Клиенты"
+  enabled: true
 instagram:
   enabled: true
 tiktok:
@@ -47,7 +44,6 @@ tiktok:
 
     assert [(target.platform, target.kind) for target in config.targets] == [
         ("telegram", "channel"),
-        ("whatsapp", "group"),
         ("instagram", "feed"),
         ("instagram", "story"),
         ("tiktok", "feed"),
@@ -63,8 +59,9 @@ tiktok:
     assert config.telegram_api.base_url == "https://api.telegram.org"
     assert not config.telegram_api.local
     assert config.whatsapp is not None
-    assert config.whatsapp.session_id == "whatsapp-session"
-    assert config.whatsapp.media_max_bytes == 100 * 1024**2
+    assert config.whatsapp.api_token == "whapi-token"
+    assert config.whatsapp.api_url == "https://gate.whapi.cloud"
+    assert config.whatsapp.target_limit == 50
 
 
 def test_missing_target_name_fails_at_startup(tmp_path: Path) -> None:
@@ -92,27 +89,50 @@ telegram:
         load_config(config_path, tmp_path / ".env")
 
 
-def test_whatsapp_target_jid_must_match_target_kind(tmp_path: Path) -> None:
+def test_whatsapp_produces_no_static_targets(tmp_path: Path) -> None:
     config_path = _write(
         tmp_path / "config.yaml",
-        "whatsapp:\n  channels:\n    - jid: group@g.us\n      name: Wrong\n",
+        "whatsapp:\n  enabled: true\n",
     )
 
-    with pytest.raises(ConfigError, match="@newsletter"):
-        load_config(config_path, tmp_path / ".env")
+    config = load_config(config_path, tmp_path / ".env")
+
+    # Groups and channels are discovered through Whapi at runtime instead.
+    assert config.targets == ()
+    assert config.whatsapp is not None
 
 
-def test_whatsapp_credentials_are_required_when_targets_exist(
+def test_disabled_whatsapp_needs_no_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config_path = _write(
-        tmp_path / "config.yaml",
-        "whatsapp:\n  groups:\n    - jid: group@g.us\n      name: Group\n",
-    )
-    monkeypatch.delenv("WHATSAPP_SESSION_ID")
+    config_path = _write(tmp_path / "config.yaml", "whatsapp:\n  enabled: false\n")
+    monkeypatch.delenv("WHAPI_API_TOKEN")
 
-    with pytest.raises(ConfigError, match="WHATSAPP_SESSION_ID"):
+    config = load_config(config_path, tmp_path / ".env")
+
+    assert config.whatsapp is None
+
+
+def test_whatsapp_token_is_required_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "whatsapp:\n  enabled: true\n")
+    monkeypatch.delenv("WHAPI_API_TOKEN")
+
+    with pytest.raises(ConfigError, match="WHAPI_API_TOKEN"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_invalid_target_limit_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "whatsapp:\n  enabled: true\n")
+    monkeypatch.setenv("WHATSAPP_TARGET_LIMIT", "0")
+
+    with pytest.raises(ConfigError, match="WHATSAPP_TARGET_LIMIT"):
         load_config(config_path, tmp_path / ".env")
 
 

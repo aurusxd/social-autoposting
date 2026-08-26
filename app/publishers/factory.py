@@ -12,12 +12,9 @@ def build_publishers(config: AppConfig) -> dict[str, Publisher]:
     }
     if config.whatsapp is not None:
         publishers["whatsapp"] = WhatsAppPublisher(
+            api_token=config.whatsapp.api_token,
             api_url=config.whatsapp.api_url,
-            api_key=config.whatsapp.api_key,
-            session_id=config.whatsapp.session_id,
             request_timeout=config.whatsapp.request_timeout,
-            media_base_url=config.whatsapp.media_base_url,
-            media_root=config.whatsapp.media_root,
             media_max_bytes=config.whatsapp.media_max_bytes,
         )
     if config.instagram is not None:

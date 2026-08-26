@@ -91,13 +91,11 @@ def test_publisher_factory_registers_enabled_whatsapp() -> None:
         telegram_api=_telegram_api(),
         targets=(),
         whatsapp=WhatsAppConfig(
-            api_url="http://openwa:2785/api",
-            api_key="w" * 32,
-            session_id="session-id",
+            api_token="whapi-token",
+            api_url="https://gate.whapi.cloud",
             request_timeout=90,
-            media_base_url="http://media-server",
-            media_root=Path("media"),
             media_max_bytes=100 * 1024**2,
+            target_limit=50,
         ),
         instagram=None,
         tiktok=None,
@@ -107,4 +105,5 @@ def test_publisher_factory_registers_enabled_whatsapp() -> None:
 
     publisher = publishers["whatsapp"]
     assert isinstance(publisher, WhatsAppPublisher)
-    assert publisher.session_id == "session-id"
+    assert publisher.api_token == "whapi-token"
+    assert publisher.api_url == "https://gate.whapi.cloud"

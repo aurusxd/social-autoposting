@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +8,8 @@ import aiohttp
 
 from app.publishers import MediaFile, Post, PublishTarget
 from app.publishers.whatsapp_publisher import WhatsAppPublisher
+
+TOKEN = "whapi-secret-token"
 
 
 class FakeResponse:
@@ -35,9 +36,10 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, responses: list[FakeResponse] | None = None) -> None:
-        self.responses = responses or []
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+    def __init__(self, response: FakeResponse | None = None) -> None:
+        self.response = response
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self._sent = 0
 
     async def __aenter__(self) -> FakeSession:
         return self
@@ -45,186 +47,248 @@ class FakeSession:
     async def __aexit__(self, *_: Any) -> None:
         return None
 
-    async def post(self, url: str, **kwargs: Any) -> FakeResponse:
-        self.calls.append((url, kwargs))
-        if self.responses:
-            return self.responses.pop(0)
-        message_number = len(self.calls)
-        return FakeResponse(201, {"messageId": f"message-{message_number}"})
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append((method, url, kwargs))
+        if self.response is not None:
+            return self.response
+        self._sent += 1
+        return FakeResponse(200, {"message": {"id": f"wamid.{self._sent}"}})
+
+    @property
+    def urls(self) -> list[str]:
+        return [url for _, url, _ in self.calls]
+
+    @property
+    def bodies(self) -> list[dict[str, Any]]:
+        return [kwargs["json"] for _, _, kwargs in self.calls if "json" in kwargs]
 
 
-def _publisher(
-    session: FakeSession,
-    media_root: Path,
-    media_base_url: str | None = "http://media-server",
-) -> WhatsAppPublisher:
+def _publisher(session: FakeSession, **overrides: Any) -> WhatsAppPublisher:
     def session_factory(**kwargs: Any) -> FakeSession:
         assert isinstance(kwargs["timeout"], aiohttp.ClientTimeout)
         return session
 
     return WhatsAppPublisher(
-        api_url="http://openwa:2785/api",
-        api_key="secret-key",
-        session_id="session/id",
-        media_base_url=media_base_url,
-        media_root=media_root,
+        api_token=TOKEN,
+        api_url="https://gate.whapi.example",
+        request_timeout=90,
         session_factory=session_factory,
+        **overrides,
     )
 
 
-def _publish(
-    publisher: WhatsAppPublisher,
-    post: Post,
-    *,
-    key: str = "120363123456789@g.us",
-    kind: str = "group",
-):
-    return asyncio.run(publisher.publish(post, PublishTarget(key, kind, "WhatsApp")))
+def _photo(tmp_path: Path, name: str = "photo.jpg", position: int = 0) -> MediaFile:
+    path = tmp_path / name
+    path.write_bytes(b"\xff\xd8\xff" + b"0" * 64)
+    return MediaFile(file_path=str(path), media_type="photo", position=position)
 
 
-def _media(path: Path, media_type: str, position: int = 0) -> MediaFile:
-    path.write_bytes(f"{media_type}-bytes".encode())
-    return MediaFile(str(path), media_type, position=position)
+def _group() -> PublishTarget:
+    return PublishTarget("120363000000000000@g.us", "group", "Группа клиентов")
 
 
-def test_text_is_sent_to_selected_group(tmp_path: Path) -> None:
+def _channel() -> PublishTarget:
+    return PublishTarget("120363171744447809@newsletter", "channel", "Канал")
+
+
+def test_text_only_post_goes_to_a_group() -> None:
     session = FakeSession()
+    publisher = _publisher(session)
 
-    result = _publish(
-        _publisher(session, tmp_path),
-        Post(id=1, caption="Текст для группы"),
-    )
+    result = asyncio.run(publisher.publish(Post(id=1, caption="Привет"), _group()))
 
     assert result.success
-    assert result.external_id == "message-1"
-    url, request = session.calls[0]
-    assert url.endswith("/sessions/session%2Fid/messages/send-text")
-    assert request["json"] == {
-        "chatId": "120363123456789@g.us",
-        "text": "Текст для группы",
-    }
-    assert request["headers"] == {"X-API-Key": "secret-key"}
+    assert result.external_id == "wamid.1"
+    assert session.urls == ["https://gate.whapi.example/messages/text"]
+    assert session.bodies == [{"to": "120363000000000000@g.us", "body": "Привет"}]
 
 
-def test_media_uses_internal_urls_and_preserves_order(tmp_path: Path) -> None:
+def test_channel_target_is_supported() -> None:
     session = FakeSession()
-    second = _media(tmp_path / "second.mp4", "video", position=1)
-    first = _media(tmp_path / "first photo.jpg", "photo", position=0)
+    publisher = _publisher(session)
 
-    result = _publish(
-        _publisher(session, tmp_path),
-        Post(id=2, caption="Подпись", media_files=(second, first)),
-        key="120363000000000000@newsletter",
-        kind="channel",
-    )
+    result = asyncio.run(publisher.publish(Post(id=2, caption="Пост"), _channel()))
 
     assert result.success
-    assert result.external_id == "message-1,message-2"
-    assert session.calls[0][0].endswith("/messages/send-image")
-    assert session.calls[0][1]["json"] == {
-        "chatId": "120363000000000000@newsletter",
-        "caption": "Подпись",
-        "filename": "first photo.jpg",
-        "mimetype": "image/jpeg",
-        "url": "http://media-server/first%20photo.jpg",
-    }
-    assert session.calls[1][0].endswith("/messages/send-video")
-    assert session.calls[1][1]["json"]["url"].endswith("/second.mp4")
-    assert "caption" not in session.calls[1][1]["json"]
+    assert session.bodies[0]["to"] == "120363171744447809@newsletter"
 
 
-def test_media_falls_back_to_base64_without_media_server(tmp_path: Path) -> None:
+def test_bearer_token_is_sent_in_the_header() -> None:
     session = FakeSession()
-    photo = _media(tmp_path / "photo.png", "photo")
+    publisher = _publisher(session)
 
-    result = _publish(
-        _publisher(session, tmp_path, media_base_url=None),
-        Post(id=3, caption=None, media_files=(photo,)),
-    )
+    asyncio.run(publisher.publish(Post(id=3, caption="Привет"), _group()))
+
+    _, _, kwargs = session.calls[0]
+    assert kwargs["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_photo_is_uploaded_as_multipart(tmp_path: Path) -> None:
+    session = FakeSession()
+    publisher = _publisher(session)
+    post = Post(id=4, caption="Подпись", media_files=(_photo(tmp_path),))
+
+    result = asyncio.run(publisher.publish(post, _group()))
 
     assert result.success
-    payload = session.calls[0][1]["json"]
-    assert payload["mimetype"] == "image/png"
-    assert base64.b64decode(payload["base64"]) == b"photo-bytes"
-    assert payload["filename"] == "photo.png"
-    assert "url" not in payload
+    assert session.urls == ["https://gate.whapi.example/messages/image"]
+    _, _, kwargs = session.calls[0]
+    assert isinstance(kwargs["data"], aiohttp.FormData)
+    assert "json" not in kwargs
 
 
-def test_media_falls_back_to_base64_when_openwa_rejects_url(
-    tmp_path: Path,
-) -> None:
+def test_video_uses_the_video_endpoint(tmp_path: Path) -> None:
+    session = FakeSession()
+    publisher = _publisher(session)
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"0" * 128)
+    post = Post(
+        id=5,
+        caption="",
+        media_files=(MediaFile(file_path=str(path), media_type="video"),),
+    )
+
+    result = asyncio.run(publisher.publish(post, _group()))
+
+    assert result.success
+    assert session.urls == ["https://gate.whapi.example/messages/video"]
+
+
+def test_long_caption_is_sent_as_a_separate_text_message(tmp_path: Path) -> None:
+    session = FakeSession()
+    publisher = _publisher(session)
+    post = Post(id=6, caption="д" * 1500, media_files=(_photo(tmp_path),))
+
+    result = asyncio.run(publisher.publish(post, _group()))
+
+    assert result.success
+    assert session.urls == [
+        "https://gate.whapi.example/messages/text",
+        "https://gate.whapi.example/messages/image",
+    ]
+
+
+def test_only_the_first_media_carries_the_caption(tmp_path: Path) -> None:
+    session = FakeSession()
+    publisher = _publisher(session)
+    post = Post(
+        id=7,
+        caption="Подпись",
+        media_files=(
+            _photo(tmp_path, "one.jpg", 0),
+            _photo(tmp_path, "two.jpg", 1),
+        ),
+    )
+
+    result = asyncio.run(publisher.publish(post, _group()))
+
+    assert result.success
+    assert result.external_id == "wamid.1,wamid.2"
+    assert len(session.calls) == 2
+
+
+def test_rate_limited_send_is_retryable() -> None:
     session = FakeSession(
-        [
-            FakeResponse(400, {"message": "Bad Request"}),
-            FakeResponse(201, {"messageId": "fallback-message"}),
-        ]
+        FakeResponse(
+            429,
+            {"error": {"message": "too many requests"}},
+            headers={"Retry-After": "17"},
+        )
     )
-    photo = _media(tmp_path / "photo.jpg", "photo")
+    publisher = _publisher(session)
 
-    result = _publish(
-        _publisher(session, tmp_path),
-        Post(id=7, caption="Подпись", media_files=(photo,)),
-    )
-
-    assert result.success
-    assert result.external_id == "fallback-message"
-    first_payload = session.calls[0][1]["json"]
-    fallback_payload = session.calls[1][1]["json"]
-    assert first_payload["url"] == "http://media-server/photo.jpg"
-    assert "base64" not in first_payload
-    assert "url" not in fallback_payload
-    assert fallback_payload["mimetype"] == "image/jpeg"
-    assert fallback_payload["filename"] == "photo.jpg"
-    assert base64.b64decode(fallback_payload["base64"]) == b"photo-bytes"
-
-
-def test_long_caption_is_sent_as_text_before_media(tmp_path: Path) -> None:
-    session = FakeSession()
-    photo = _media(tmp_path / "photo.jpg", "photo")
-    caption = "a" * 1025
-
-    result = _publish(
-        _publisher(session, tmp_path),
-        Post(id=4, caption=caption, media_files=(photo,)),
-    )
-
-    assert result.success
-    assert session.calls[0][0].endswith("/messages/send-text")
-    assert session.calls[0][1]["json"]["text"] == caption
-    assert session.calls[1][0].endswith("/messages/send-image")
-    assert "caption" not in session.calls[1][1]["json"]
-
-
-def test_rate_limit_is_retryable_and_honors_retry_after(tmp_path: Path) -> None:
-    session = FakeSession(
-        [FakeResponse(429, {"message": "slow down", "retryAfterSeconds": 45})]
-    )
-
-    result = _publish(
-        _publisher(session, tmp_path),
-        Post(id=5, caption="Message"),
-    )
+    result = asyncio.run(publisher.publish(Post(id=8, caption="Привет"), _group()))
 
     assert not result.success
     assert result.retryable
-    assert result.retry_after == 45
-    assert "slow down" in (result.error or "")
+    assert result.retry_after == 17
 
 
-def test_partial_publication_is_not_retried_to_avoid_duplicates(tmp_path: Path) -> None:
-    session = FakeSession(
-        [
-            FakeResponse(201, {"messageId": "text-message"}),
-            FakeResponse(503, {"message": "temporarily unavailable"}),
-        ]
-    )
-    photo = _media(tmp_path / "photo.jpg", "photo")
+def test_unauthorized_send_is_not_retryable() -> None:
+    session = FakeSession(FakeResponse(401, {"error": {"message": "bad token"}}))
+    publisher = _publisher(session)
 
-    result = _publish(
-        _publisher(session, tmp_path),
-        Post(id=6, caption="a" * 1025, media_files=(photo,)),
-    )
+    result = asyncio.run(publisher.publish(Post(id=9, caption="Привет"), _group()))
 
     assert not result.success
     assert not result.retryable
+
+
+def test_token_never_leaks_into_the_error_text() -> None:
+    session = FakeSession(
+        FakeResponse(500, None, text=f"upstream failed for token {TOKEN}")
+    )
+    publisher = _publisher(session)
+
+    result = asyncio.run(publisher.publish(Post(id=10, caption="Привет"), _group()))
+
+    assert not result.success
+    # The error is stored in the database and shown in Telegram.
+    assert TOKEN not in (result.error or "")
+
+
+def test_partial_delivery_disables_the_retry(tmp_path: Path) -> None:
+    class FlakySession(FakeSession):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            if self._sent >= 1:
+                self.calls.append((method, url, kwargs))
+                return FakeResponse(500, {"error": {"message": "boom"}})
+            return await super().request(method, url, **kwargs)
+
+    session = FlakySession()
+    publisher = _publisher(session)
+    post = Post(
+        id=11,
+        caption="Подпись",
+        media_files=(
+            _photo(tmp_path, "one.jpg", 0),
+            _photo(tmp_path, "two.jpg", 1),
+        ),
+    )
+
+    result = asyncio.run(publisher.publish(post, _group()))
+
+    assert not result.success
+    # The first image already reached the chat; retrying would duplicate it.
+    assert not result.retryable
     assert "Partial WhatsApp publication" in (result.error or "")
+
+
+def test_oversized_media_is_rejected_before_any_request(tmp_path: Path) -> None:
+    session = FakeSession()
+    publisher = _publisher(session, media_max_bytes=1024)
+    path = tmp_path / "huge.jpg"
+    path.write_bytes(b"0" * 4096)
+    post = Post(
+        id=12,
+        caption="",
+        media_files=(MediaFile(file_path=str(path), media_type="photo"),),
+    )
+
+    result = asyncio.run(publisher.publish(post, _group()))
+
+    assert not result.success
+    assert not result.retryable
+    assert not session.calls
+
+
+def test_unsupported_target_kind_is_rejected() -> None:
+    session = FakeSession()
+    publisher = _publisher(session)
+    target = PublishTarget("79001234567@c.us", "contact", "Клиент")
+
+    result = asyncio.run(publisher.publish(Post(id=13, caption="Привет"), target))
+
+    assert not result.success
+    assert not result.retryable
+    assert not session.calls
+
+
+def test_empty_post_is_rejected() -> None:
+    session = FakeSession()
+    publisher = _publisher(session)
+
+    result = asyncio.run(publisher.publish(Post(id=14, caption=None), _group()))
+
+    assert not result.success
+    assert not session.calls

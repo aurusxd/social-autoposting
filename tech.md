@@ -1,15 +1,21 @@
-  # tech.md — Cross-posting Bot
+  # tech.md — Cross-posting panel
 
-v1 — initial version.
+v2 — интерфейсом стала веб-панель вместо Telegram-бота.
+
+> Документ описывает исходный замысел. Часть разделов про публикаторы отстала
+> от кода: WhatsApp работает через Whapi.Cloud, Instagram и TikTok — через
+> Zernio. Актуальное описание — в [README.md](README.md).
 
 ## Проект
 
-Telegram-бот приёма контента. Пользователь шлёт фото/видео/текст боту, бот сохраняет черновик поста, пользователь выбирает целевые каналы/группы, бот публикует пост в WhatsApp (группы/каналы), Telegram (каналы), Instagram (личный профиль: лента/сторис), TikTok. Один пользователь (владелец), без мультитенантности.
+Веб-панель приёма контента. Пользователь открывает панель в браузере (ПК или телефон), пишет текст, загружает фото/видео, выбирает целевые каналы/группы и отправляет пост в WhatsApp (группы/каналы), Telegram (каналы), Instagram (личный профиль: лента/сторис), TikTok. Один пользователь (владелец), без мультитенантности.
 
 ## Стек
 
 - Python 3.12+
-- aiogram 3.x — Telegram-бот (приём контента + UI выбора целей)
+- FastAPI + Jinja2 + uvicorn — веб-панель (приём контента + UI выбора целей)
+- nginx — обратный прокси и TLS перед панелью
+- aiogram 3.x — публикация в Telegram-каналы
 - SQLite — хранилище (файл `data/app.db`)
 - SQLAlchemy 2.x — ORM и репозитории
 - Alembic — миграции схемы SQLite
@@ -29,17 +35,26 @@ Telegram-бот приёма контента. Пользователь шлёт
 
 ```
 app/
-  bot/
-    handlers.py        # приём медиа/текста, инлайн-клавиатура выбора целей
-    keyboards.py
+  web/
+    main.py             # сборка FastAPI-приложения
+    security.py         # cookie-сессии, блокировка входа, подпись загрузок
+    dependencies.py     # конфиг, сессии, БД и шаблоны для обработчиков
+    presenters.py       # идентификаторы целей и подписи для страниц
+    routers/            # вход, страницы, JSON API
+    templates/          # Jinja-шаблоны панели
+    static/             # CSS и JS панели
   core/
     config.py           # загрузка config.yaml + .env
+    drafts.py           # черновик поста и его медиа
+    security.py         # PBKDF2 для пароля панели
   database/
     database.py          # SQLAlchemy engine + сессии SQLite
     models/              # ORM-модели
     repositories/        # операции над posts и publish_jobs
     alembic/             # окружение и версии Alembic
   services/
+    media_storage.py      # приём загрузок в media/ и удаление файлов
+    target_registry.py    # список целей: config.yaml + чаты Whapi
     submission_service.py # сохранение поста и publish_jobs одной транзакцией
     dispatch_service.py   # отправка идентификаторов заданий в Celery
   worker/
@@ -168,7 +183,9 @@ tiktok:
 `.env.example` — секреты (токены, креды провайдеров), не в `config.yaml`:
 ```
 TELEGRAM_BOT_TOKEN=
-TELEGRAM_OWNER_ID=
+WEB_ADMIN_USERNAME=admin
+WEB_ADMIN_PASSWORD=
+WEB_SECRET_KEY=
 CELERY_BROKER_URL=redis://localhost:6379/0
 DATABASE_URL=
 WHATSAPP_API_KEY=

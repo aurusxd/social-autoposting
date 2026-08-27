@@ -1,21 +1,64 @@
-# Social autoposting bot
+# Social autoposting
 
-Telegram-бот принимает текст, фото и видео, сохраняет пост в SQLite и создаёт
+Веб-панель принимает текст, фото и видео, сохраняет пост в SQLite и создаёт
 задания публикации. Celery worker получает задания через Redis и публикует их в
 Telegram-каналы, выбранные WhatsApp-группы/каналы, Instagram и TikTok.
+
+Панель работает и на компьютере, и на телефоне: вёрстка адаптивная, тема
+следует настройке системы. Telegram остаётся площадкой публикации — заменён
+только интерфейс управления.
+
+## Панель управления
+
+- **Новый пост** — текст, загрузка файлов перетаскиванием или через диалог,
+  порядок медиа стрелками, выбор площадок галочками с кнопкой «Все» у каждой
+  платформы и обновлением списка WhatsApp-чатов на лету.
+- **История** — публикации со статусом по каждой площадке, фильтр по статусу,
+  постраничный список.
+- **Карточка поста** — текст, вложения, состояние каждого задания с текстом
+  ошибки, повтор неудачных заданий и удаление поста вместе с файлами.
+
+Доступ закрыт логином и паролем: сессия хранится в подписанной cookie
+(`HttpOnly`, `SameSite=Lax`), после пяти неудачных попыток вход блокируется на
+пять минут.
 
 ## Подготовка
 
 1. Установите Python 3.12+ и зависимости:
    `python -m pip install -e ".[dev]"`.
 2. Скопируйте `.env.example` в `.env`.
-3. Заполните `TELEGRAM_BOT_TOKEN` и `TELEGRAM_OWNER_ID`. Для включённых в
-   `config.yaml` WhatsApp, Instagram и TikTok также заполните переменные
-   соответствующих интеграций из разделов ниже.
-4. Укажите Telegram-каналы в `config.yaml` и добавьте бота в них как
+3. Заполните доступ к панели:
+
+   ```dotenv
+   WEB_ADMIN_USERNAME=admin
+   WEB_ADMIN_PASSWORD=придумайте-длинный-пароль
+   WEB_SECRET_KEY=
+   ```
+
+   `WEB_SECRET_KEY` обязателен и должен быть не короче 32 символов — им
+   подписываются cookie сессии и ссылки на загруженные файлы. Сгенерируйте:
+
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(48))"
+   ```
+
+   Если менять ключ, все активные сессии станут недействительными.
+
+   Вместо пароля в открытом виде можно положить PBKDF2-хеш — тогда
+   `WEB_ADMIN_PASSWORD` оставьте пустым:
+
+   ```bash
+   python -m app.core.security
+   ```
+
+   Полученную строку впишите в `WEB_ADMIN_PASSWORD_HASH`.
+4. Заполните `TELEGRAM_BOT_TOKEN`. Для включённых в `config.yaml` WhatsApp,
+   Instagram и TikTok также заполните переменные соответствующих интеграций
+   из разделов ниже.
+5. Укажите Telegram-каналы в `config.yaml` и добавьте бота в них как
    администратора с правом публикации.
-5. Примените миграции: `alembic upgrade head`.
-6. Запустите Redis, например через Docker:
+6. Примените миграции: `alembic upgrade head`.
+7. Запустите Redis, например через Docker:
    `docker run --name social-autoposting-redis -p 6379:6379 -d redis:7-alpine`.
 
 ## Запуск
@@ -28,13 +71,21 @@ Telegram-каналы, выбранные WhatsApp-группы/каналы, In
 .\.venv\Scripts\celery.exe -A app.worker.celery_app:celery worker --loglevel=INFO --pool=solo
 ```
 
-Во втором запустите Telegram-бота:
+Во втором — веб-панель:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py
 ```
 
-Команды бота: `/start`, `/new`, `/cancel`.
+Панель откроется на <http://127.0.0.1:8000>. Адрес и порт меняются
+переменными `WEB_HOST` и `WEB_PORT`; в Docker Compose они не используются,
+там uvicorn запускается напрямую.
+
+Для разработки с автоперезагрузкой:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.web.main:create_app --factory --reload
+```
 
 ## WhatsApp через Whapi.Cloud
 
@@ -152,11 +203,17 @@ URL в задачу TikTok. Для повторов используется с�
 укажите в `ZERNIO_TIKTOK_PRIVACY_LEVEL` одно из значений, которое доступно ему:
 `MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR` или `SELF_ONLY`.
 
-## Видео больше 20 МБ из Telegram
+## Большие видео в Telegram
 
-Облачный Telegram Bot API разрешает боту скачивать файлы только до 20 МБ.
-Docker Compose запускает локальный Bot API 10.2 в режиме `--local`: скачивание
-становится неограниченным, а загрузка поддерживается до 2000 МБ.
+Облачный Telegram Bot API разрешает боту загружать видео не больше 50 МБ.
+Docker Compose запускает локальный Bot API 10.2 в режиме `--local`, который
+поднимает предел до 2000 МБ. Сами файлы приходят из браузера, поэтому лимит на
+скачивание больше не важен — важен лимит на отправку в канал.
+
+Размер, который принимает панель, задаёт `WEB_MAX_UPLOAD_BYTES` (по умолчанию
+2000 МБ). Если меняете его, поправьте и `client_max_body_size` в
+[deploy/nginx/panel.conf](deploy/nginx/panel.conf) — иначе nginx отклонит
+файл раньше приложения с ошибкой 413.
 
 Получите `api_id` и `api_hash` в разделе **API development tools** на
 `https://my.telegram.org` и добавьте их в `.env`:
@@ -171,7 +228,7 @@ TELEGRAM_API_HASH=
 PowerShell из корня проекта:
 
 ```powershell
-docker compose stop bot worker
+docker compose stop web worker
 $telegramBotToken = ((Get-Content .env | Where-Object {
     $_ -match '^TELEGRAM_BOT_TOKEN='
 } | Select-Object -First 1) -split '=', 2)[1].Trim()
@@ -185,9 +242,9 @@ docker compose up -d --build
 перезапусках повторять его не нужно. Данные локального API находятся в volume
 `telegram_bot_api_data`; не удаляйте его через `docker compose down -v`.
 
-Большие входящие файлы читаются напрямую из этого volume, поэтому режим
-поддерживается при запуске приложения через Docker Compose. При нативном запуске
-`python main.py` используется облачный API и сохраняется лимит 20 МБ.
+Локальный API работает при запуске через Docker Compose. При нативном запуске
+`python main.py` используется облачный API и сохраняется лимит 50 МБ на
+отправку.
 
 ## Проверка Celery
 
@@ -217,16 +274,19 @@ docker compose ps
 ```
 
 Compose запускает локальный Telegram Bot API и Redis, применяет
-Alembic-миграции, затем запускает Celery worker и Telegram-бота. WhatsApp
+Alembic-миграции, затем поднимает Celery worker, веб-панель и nginx. WhatsApp
 обслуживает облачный Whapi.Cloud, поэтому отдельных контейнеров под него нет.
-Внутренний Telegram API и Redis наружу не публикуются. SQLite, медиа, данные
-Redis и локального Telegram API сохраняются в именованных volumes и переживают
-пересоздание контейнеров.
+Наружу смотрит только nginx (порты 80 и 443); панель, внутренний Telegram API и
+Redis из интернета недоступны. SQLite, медиа, данные Redis и локального
+Telegram API сохраняются в именованных volumes и переживают пересоздание
+контейнеров.
+
+После запуска панель открывается по адресу сервера: `http://IP-сервера/`.
 
 Посмотреть логи:
 
 ```bash
-docker compose logs -f bot worker
+docker compose logs -f web worker nginx
 ```
 
 Обновить приложение после получения нового кода:
@@ -243,3 +303,44 @@ docker compose down
 
 Не используйте `docker compose down -v`, если хотите сохранить базу, медиа и
 очередь Redis.
+
+## HTTPS для панели
+
+Пока панель работает по HTTP, пароль и cookie сессии идут по сети открытым
+текстом. На сервере, доступном из интернета, выпустите сертификат.
+
+1. Направьте A-запись домена на IP сервера и дождитесь, пока он начнёт
+   резолвиться.
+2. Впишите домен в `server_name` в
+   [deploy/nginx/panel.conf](deploy/nginx/panel.conf) (в HTTPS-блоке) и
+   поднимите стек: `docker compose up -d`.
+3. Выпустите сертификат через webroot, который уже отдаёт nginx:
+
+   ```bash
+   docker run --rm -v social-autoposting_letsencrypt:/etc/letsencrypt -v social-autoposting_certbot_webroot:/var/www/certbot certbot/certbot certonly --webroot -w /var/www/certbot -d panel.example.com --email you@example.com --agree-tos --no-eff-email
+   ```
+
+   Имена томов — это имя проекта Compose (`social-autoposting`) плюс имя тома;
+   проверить можно через `docker volume ls`.
+
+4. Раскомментируйте HTTPS-блок и редирект с 80 порта в том же файле, поправьте
+   пути к сертификату под свой домен.
+5. Включите защищённые cookie в `.env` и перезапустите:
+
+   ```dotenv
+   WEB_SECURE_COOKIES=true
+   ```
+
+   ```bash
+   docker compose up -d
+   docker compose restart nginx
+   ```
+
+Продление сертификата — той же командой `certonly` по расписанию (cron или
+systemd timer) с последующим `docker compose restart nginx`.
+
+Дополнительно стоит закрыть фаерволом всё, кроме 22, 80 и 443:
+
+```bash
+ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw enable
+```

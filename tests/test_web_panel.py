@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database.models import MediaFile, Post, PublishJob
+from app.web.routers import api
 
 PIXEL = b"\xff\xd8\xff\xe0fake-jpeg-body"
 
@@ -306,3 +309,44 @@ def test_the_health_endpoint_needs_no_session(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_an_unreachable_broker_does_not_stall_the_page(
+    signed_in: TestClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def hang(job_ids: tuple[int, ...]) -> None:
+        time.sleep(2)
+
+    monkeypatch.setattr(api, "dispatch_jobs", hang)
+    monkeypatch.setattr(api, "DISPATCH_TIMEOUT_SECONDS", 0.1)
+
+    response = signed_in.post(
+        "/api/posts",
+        json={"caption": "Пост", "media": [], "targets": ["telegram:channel:-1001"]},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["dispatched"] == 0
+    assert body["failed"] == 1
+
+    # The post is saved either way, so a worker can still pick the job up.
+    with session_factory() as session:
+        job = session.scalars(select(PublishJob)).one()
+    assert job.status == "pending"
+
+
+def test_the_login_page_renders(client: TestClient) -> None:
+    response = client.get("/login")
+
+    assert response.status_code == 200
+    assert 'name="password"' in response.text
+
+
+def test_the_static_assets_are_served(client: TestClient) -> None:
+    for path in ("/static/css/app.css", "/static/js/composer.js", "/static/js/post.js"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.content

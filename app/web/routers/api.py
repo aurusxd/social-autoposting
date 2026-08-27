@@ -8,7 +8,7 @@ from loguru import logger
 
 from app.core.drafts import DraftMedia, PostDraft
 from app.database.repositories.posts_repo import PostRepository
-from app.services.dispatch_service import dispatch_jobs
+from app.services.dispatch_service import DispatchResult, dispatch_jobs
 from app.services.media_storage import MediaError, delete_media, save_upload
 from app.services.submission_service import SubmissionError, save_submission
 from app.services.target_registry import resolve_targets
@@ -33,6 +33,7 @@ router = APIRouter(prefix="/api")
 
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 UPLOADED_FILE = File(...)
+DISPATCH_TIMEOUT_SECONDS = 10
 
 
 @router.get("/targets", response_model=TargetsOut)
@@ -132,7 +133,7 @@ async def create_post(
             "Не удалось сохранить пост. Попробуйте ещё раз.",
         ) from error
 
-    result = await asyncio.to_thread(dispatch_jobs, submission.job_ids)
+    result = await _dispatch(submission.job_ids)
     return PostCreatedOut(
         post_id=submission.post_id,
         job_count=len(submission.job_ids),
@@ -154,7 +155,7 @@ async def retry_post(
     job_ids = repository.requeue_failed(post_id)
     database.commit()
     if job_ids:
-        await asyncio.to_thread(dispatch_jobs, tuple(job_ids))
+        await _dispatch(tuple(job_ids))
     return JobIdsOut(job_ids=job_ids)
 
 
@@ -174,6 +175,28 @@ async def delete_post(
         )
     database.commit()
     delete_media(paths)
+
+
+async def _dispatch(job_ids: tuple[int, ...]) -> DispatchResult:
+    """Hand jobs to Celery without letting a sick broker stall the request.
+
+    The jobs are already saved as `pending`, and a worker re-dispatches every
+    pending job when it starts, so giving up early loses nothing but keeps the
+    page responsive while Redis is unreachable.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(dispatch_jobs, job_ids),
+            timeout=DISPATCH_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Celery did not accept jobs {} within {} seconds; "
+            "they stay pending for the worker to pick up",
+            job_ids,
+            DISPATCH_TIMEOUT_SECONDS,
+        )
+        return DispatchResult((), job_ids)
 
 
 async def _chunks(file: UploadFile) -> AsyncIterator[bytes]:

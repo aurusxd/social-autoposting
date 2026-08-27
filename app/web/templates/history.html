@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}История · {{ site_name }}{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <h2 class="card-title">История публикаций</h2>
+    <span class="hint">всего: {{ total }}</span>
+  </div>
+
+  <nav class="filters">
+    <a class="chip {{ 'is-active' if not selected_status }}" href="/history">Все</a>
+    {% for item in statuses %}
+    <a class="chip {{ 'is-active' if selected_status == item.value }}"
+       href="/history?status={{ item.value }}">{{ item.label }}</a>
+    {% endfor %}
+  </nav>
+
+  {% if not posts %}
+  <p class="empty">Публикаций пока нет.</p>
+  {% else %}
+  <ul class="post-list">
+    {% for post in posts %}
+    <li class="post-row">
+      <a class="post-link" href="/posts/{{ post.id }}">
+        <div class="post-head">
+          <span class="badge badge-{{ post.status }}">{{ post.status_label }}</span>
+          <span class="post-date">{{ post.created_at.strftime('%d.%m.%Y %H:%M') }}</span>
+          <span class="post-id">#{{ post.id }}</span>
+        </div>
+        <p class="post-preview">{{ post.preview or 'Без текста' }}</p>
+        <div class="post-meta">
+          {% if post.photo_count %}<span>🖼 {{ post.photo_count }}</span>{% endif %}
+          {% if post.video_count %}<span>🎬 {{ post.video_count }}</span>{% endif %}
+          <span>{{ post.done_count }}/{{ post.job_count }} площадок</span>
+          {% if post.failed_count %}<span class="text-error">ошибок: {{ post.failed_count }}</span>{% endif %}
+          <span class="post-platforms">{{ post.platforms | join(', ') }}</span>
+        </div>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <nav class="pager">
+    {% set query = '&status=' ~ selected_status if selected_status else '' %}
+    {% if page > 1 %}
+    <a class="button button-ghost" href="/history?page={{ page - 1 }}{{ query }}">← Назад</a>
+    {% endif %}
+    {% if has_next %}
+    <a class="button button-ghost" href="/history?page={{ page + 1 }}{{ query }}">Вперёд →</a>
+    {% endif %}
+  </nav>
+</section>
+{% endblock %}

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}{{ site_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📮</text></svg>">
+</head>
+<body>
+{% block body %}
+<div class="shell">
+  <header class="topbar">
+    <a class="brand" href="/">📮 {{ site_name }}</a>
+    <nav class="nav">
+      <a href="/" class="nav-link {{ 'is-active' if active == 'composer' }}">Новый пост</a>
+      <a href="/history" class="nav-link {{ 'is-active' if active == 'history' }}">История</a>
+    </nav>
+    <form class="logout" method="post" action="/logout">
+      <button type="submit" class="button button-ghost">Выйти</button>
+    </form>
+  </header>
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% endblock %}
+{% block scripts %}{% endblock %}
+</body>
+</html>

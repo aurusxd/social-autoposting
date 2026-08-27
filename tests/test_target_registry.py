@@ -15,6 +15,7 @@ from app.core.config import (
 )
 from app.services import target_registry
 from app.services.target_registry import resolve_targets
+from tests.factories import web_config
 
 GROUPS = {
     "groups": [
@@ -81,7 +82,7 @@ def _session_factory(session: FakeSession):
 def _config(target_limit: int = 50, whatsapp: bool = True) -> AppConfig:
     return AppConfig(
         bot_token="token",
-        owner_id=1,
+        web=web_config(),
         telegram_api=TelegramAPIConfig(
             base_url="https://api.telegram.org",
             local=False,

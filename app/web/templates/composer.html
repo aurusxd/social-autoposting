@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Новый пост · {{ site_name }}{% endblock %}
+
+{% block content %}
+<form id="composer" class="composer"
+      data-media-limit="{{ media_limit }}"
+      data-max-upload-mb="{{ max_upload_mb }}">
+
+  <section class="card">
+    <h2 class="card-title">Текст поста</h2>
+    <textarea id="caption" class="textarea" name="caption" rows="10"
+              placeholder="Текст публикации или описание к материалу…"></textarea>
+    <p class="hint"><span id="caption-count">0</span> символов</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title">Материалы</h2>
+      <span class="hint" id="media-count">0 из {{ media_limit }}</span>
+    </div>
+
+    <label id="dropzone" class="dropzone" for="file-input" tabindex="0">
+      <input id="file-input" class="visually-hidden" type="file" multiple
+             accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime,video/webm,video/3gpp">
+      <span class="dropzone-icon">⬆</span>
+      <span class="dropzone-text">Перетащите файлы сюда или нажмите, чтобы выбрать</span>
+      <span class="hint">JPG, PNG, GIF, WebP, MP4, MOV, WebM, 3GP · до {{ max_upload_mb }} МБ</span>
+    </label>
+
+    <ul id="media-list" class="media-list"></ul>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title">Площадки</h2>
+      <button type="button" id="refresh-targets" class="button button-ghost">Обновить список</button>
+    </div>
+
+    {% if whatsapp_failed %}
+    <p class="alert alert-warning">Не удалось получить чаты WhatsApp. Проверьте инстанс Whapi и обновите список.</p>
+    {% endif %}
+    {% if truncated %}
+    <p class="alert alert-warning">Чатов больше, чем помещается в список. Увеличьте <code>WHATSAPP_TARGET_LIMIT</code>, если нужного нет.</p>
+    {% endif %}
+
+    <div id="targets">
+      {% include "partials/targets.html" %}
+    </div>
+  </section>
+
+  <div class="composer-actions">
+    <p id="composer-message" class="composer-message" role="status"></p>
+    <div class="composer-buttons">
+      <button type="button" id="reset" class="button button-ghost">Очистить</button>
+      <button type="submit" id="submit" class="button button-primary">Опубликовать</button>
+    </div>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/composer.js" defer></script>
+{% endblock %}

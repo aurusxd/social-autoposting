@@ -3,12 +3,19 @@ from pathlib import Path
 import pytest
 
 from app.core.config import ConfigError, load_config
+from app.core.security import hash_password, verify_password_hash
 
 
 @pytest.fixture(autouse=True)
 def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
-    monkeypatch.setenv("TELEGRAM_OWNER_ID", "12345")
+    monkeypatch.setenv("WEB_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("WEB_ADMIN_PASSWORD", "panel-password")
+    monkeypatch.setenv("WEB_SECRET_KEY", "k" * 48)
+    monkeypatch.delenv("WEB_ADMIN_PASSWORD_HASH", raising=False)
+    monkeypatch.delenv("WEB_SECURE_COOKIES", raising=False)
+    monkeypatch.delenv("WEB_MAX_UPLOAD_BYTES", raising=False)
+    monkeypatch.delenv("WEB_SESSION_MAX_AGE", raising=False)
     monkeypatch.setenv("WHAPI_API_TOKEN", "whapi-token")
     monkeypatch.setenv("ZERNIO_API_KEY", "zernio-key")
     monkeypatch.setenv("ZERNIO_INSTAGRAM_ACCOUNT_ID", "instagram-account")
@@ -144,12 +151,62 @@ def test_token_is_required(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         load_config(config_path, tmp_path / ".env")
 
 
-def test_owner_id_is_required(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_panel_password_is_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config_path = _write(tmp_path / "config.yaml", "telegram: {}\n")
-    monkeypatch.delenv("TELEGRAM_OWNER_ID")
+    monkeypatch.delenv("WEB_ADMIN_PASSWORD")
 
-    with pytest.raises(ConfigError, match="TELEGRAM_OWNER_ID"):
+    with pytest.raises(ConfigError, match="WEB_ADMIN_PASSWORD"):
         load_config(config_path, tmp_path / ".env")
+
+
+def test_short_secret_key_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "telegram: {}\n")
+    monkeypatch.setenv("WEB_SECRET_KEY", "too-short")
+
+    with pytest.raises(ConfigError, match="WEB_SECRET_KEY"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_password_hash_replaces_the_plaintext_password(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "telegram: {}\n")
+    monkeypatch.setenv("WEB_ADMIN_PASSWORD_HASH", hash_password("secret", 1_000))
+
+    config = load_config(config_path, tmp_path / ".env")
+
+    assert config.web.password == ""
+    assert verify_password_hash(config.web.password_hash, "secret")
+
+
+def test_broken_password_hash_fails_at_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write(tmp_path / "config.yaml", "telegram: {}\n")
+    monkeypatch.setenv("WEB_ADMIN_PASSWORD_HASH", "not-a-hash")
+
+    with pytest.raises(ConfigError, match="WEB_ADMIN_PASSWORD_HASH"):
+        load_config(config_path, tmp_path / ".env")
+
+
+def test_panel_defaults_are_applied(tmp_path: Path) -> None:
+    config_path = _write(tmp_path / "config.yaml", "telegram: {}\n")
+
+    config = load_config(config_path, tmp_path / ".env")
+
+    assert config.web.username == "admin"
+    assert config.web.password == "panel-password"
+    assert config.web.session_max_age == 7 * 24 * 3600
+    assert config.web.max_upload_bytes == 2000 * 1024**2
+    assert not config.web.secure_cookies
 
 
 def test_zernio_account_is_required_when_instagram_enabled(

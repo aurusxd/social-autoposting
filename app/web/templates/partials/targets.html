@@ -1,0 +1,21 @@
+{% if not groups %}
+<p class="empty">Нет доступных площадок. Проверьте <code>config.yaml</code> и интеграции.</p>
+{% else %}
+{% for group in groups %}
+<fieldset class="target-group" data-platform="{{ group.platform }}">
+  <legend class="target-legend">
+    <span>{{ group.label }}</span>
+    <button type="button" class="button button-link" data-select-all="{{ group.platform }}">Все</button>
+  </legend>
+  <div class="target-grid">
+    {% for target in group.targets %}
+    <label class="target">
+      <input type="checkbox" name="targets" value="{{ target.id }}">
+      <span class="target-name">{{ target.name }}</span>
+      <span class="target-kind">{{ target.kind_label }}</span>
+    </label>
+    {% endfor %}
+  </div>
+</fieldset>
+{% endfor %}
+{% endif %}

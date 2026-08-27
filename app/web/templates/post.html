@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Пост #{{ post.id }} · {{ site_name }}{% endblock %}
+
+{% block content %}
+<section class="card" data-post-id="{{ post.id }}">
+  <div class="card-head">
+    <h2 class="card-title">Пост #{{ post.id }}</h2>
+    <span class="badge badge-{{ post.status }}">{{ post.status_label }}</span>
+  </div>
+  <p class="hint">{{ post.created_at.strftime('%d.%m.%Y %H:%M') }}</p>
+
+  {% if post.caption %}
+  <pre class="caption">{{ post.caption }}</pre>
+  {% else %}
+  <p class="empty">Без текста</p>
+  {% endif %}
+
+  {% if media %}
+  <div class="media-grid">
+    {% for item in media %}
+    {% if item.media_type == 'photo' %}
+    <a href="{{ item.url }}" target="_blank" rel="noopener">
+      <img class="media-thumb" src="{{ item.url }}" alt="Вложение поста" loading="lazy">
+    </a>
+    {% else %}
+    <video class="media-thumb" src="{{ item.url }}" controls preload="metadata"></video>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2 class="card-title">Площадки</h2>
+    {% if post.failed_count %}
+    <button type="button" id="retry" class="button button-primary">Повторить неудачные</button>
+    {% endif %}
+  </div>
+
+  <ul class="job-list">
+    {% for job in jobs %}
+    <li class="job-row">
+      <span class="badge badge-{{ job.status }}">{{ job.status_label }}</span>
+      <span class="job-platform">{{ job.platform }}</span>
+      <span class="job-target">{{ job.target }}</span>
+      {% if job.attempts %}<span class="hint">попыток: {{ job.attempts }}</span>{% endif %}
+      {% if job.last_error %}<span class="job-error">{{ job.last_error }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+
+  <p id="post-message" class="composer-message" role="status"></p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2 class="card-title">Управление</h2>
+  </div>
+  <p class="hint">Удаление уберёт пост, вложения и историю заданий. Пока задания в работе, удалить нельзя.</p>
+  <button type="button" id="delete-post" class="button button-danger">Удалить пост</button>
+  <a class="button button-ghost" href="/history">К истории</a>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/post.js" defer></script>
+{% endblock %}

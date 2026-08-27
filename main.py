@@ -1,45 +1,30 @@
-import asyncio
+import os
 
-from aiogram import Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
-from aiogram.types import BotCommand
+import uvicorn
 from loguru import logger
 
-from app.bot.handlers import router
-from app.bot.middleware import OwnerOnlyMiddleware
-from app.core.config import load_config
-from app.services.telegram_client import build_telegram_bot
-
-
-async def run() -> None:
-    config = load_config()
-    bot = build_telegram_bot(
-        config.bot_token,
-        config.telegram_api,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    dispatcher = Dispatcher(
-        storage=MemoryStorage(),
-        events_isolation=SimpleEventIsolation(),
-    )
-    owner_only = OwnerOnlyMiddleware(config.owner_id)
-    dispatcher.message.outer_middleware(owner_only)
-    dispatcher.callback_query.outer_middleware(owner_only)
-    dispatcher.include_router(router)
-    await bot.set_my_commands(
-        [
-            BotCommand(command="new", description="Создать новый пост"),
-            BotCommand(command="cancel", description="Удалить текущий черновик"),
-        ]
-    )
-    logger.info("Starting Telegram UI with {} publication targets", len(config.targets))
-    await dispatcher.start_polling(bot, app_config=config)
+from app.core.config import load_config, load_environment
 
 
 def main() -> None:
-    asyncio.run(run())
+    load_environment()
+    config = load_config()
+    host = os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.getenv("WEB_PORT", "8000").strip() or "8000")
+    logger.info(
+        "Starting the control panel on {}:{} with {} static targets",
+        host,
+        port,
+        len(config.targets),
+    )
+    uvicorn.run(
+        "app.web.main:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
 
 
 if __name__ == "__main__":

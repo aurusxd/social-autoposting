@@ -5,22 +5,28 @@ build-backend = "hatchling.build"
 [project]
 name = "social-autoposting"
 version = "0.1.0"
-description = "Telegram UI for a social cross-posting bot"
+description = "Web control panel for a social cross-posting service"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.12,<4",
     "aiogram>=3.20,<4",
     "alembic>=1.19.1",
     "celery>=5.6.3",
+    "fastapi>=0.115,<1",
+    "itsdangerous>=2.2,<3",
+    "jinja2>=3.1,<4",
     "loguru>=0.7,<1",
+    "python-multipart>=0.0.20",
     "PyYAML>=6.0,<7",
     "redis>=8.1.0",
     "sqlalchemy>=2.0.52",
+    "uvicorn[standard]>=0.34,<1",
     "aiohttp-socks>=0.12.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.28,<1",
     "pytest>=8.3,<9",
     "ruff>=0.12,<1",
 ]

@@ -2,8 +2,8 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.bot.models import DraftMedia, PostDraft
 from app.core.config import PublishTarget
+from app.core.drafts import DraftMedia, PostDraft
 from app.database.models import Base, MediaFile, Post, PublishJob
 from app.services.submission_service import SubmissionError, save_submission
 
@@ -14,7 +14,7 @@ def test_submission_persists_post_media_and_jobs() -> None:
     Base.metadata.create_all(engine)
     draft = PostDraft(
         caption="Текст публикации",
-        media=(DraftMedia("tg-photo", "photo", "media/photo.jpg"),),
+        media=(DraftMedia("media/photo.jpg", "photo"),),
     )
     targets = (
         PublishTarget("telegram", "-1001", "channel", "Основной"),
@@ -32,7 +32,8 @@ def test_submission_persists_post_media_and_jobs() -> None:
     assert post.caption == "Текст публикации"
     assert post.status == "queued"
     assert len(media) == 1
-    assert media[0].tg_file_id == "tg-photo"
+    # Media now arrives from the browser, so there is no Telegram file id.
+    assert media[0].tg_file_id is None
     assert media[0].file_path == "media/photo.jpg"
     assert [job.platform for job in jobs] == ["telegram", "instagram"]
     assert all(job.status == "pending" for job in jobs)
@@ -43,15 +44,24 @@ def test_submission_rejects_unstored_media() -> None:
     engine = create_engine("sqlite://")
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     Base.metadata.create_all(engine)
-    draft = PostDraft(media=(DraftMedia("tg-photo", "photo"),))
+    draft = PostDraft(media=(DraftMedia("", "photo"),))
     targets = (PublishTarget("telegram", "-1001", "channel", "Основной"),)
 
-    try:
+    with pytest.raises(SubmissionError, match="медиафайлы"):
         save_submission(draft, targets, session_factory)
-    except SubmissionError as error:
-        assert "медиафайлы" in str(error)
-    else:
-        raise AssertionError("SubmissionError was not raised")
+
+
+def test_submission_rejects_more_than_ten_files() -> None:
+    engine = create_engine("sqlite://")
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    draft = PostDraft(
+        media=tuple(DraftMedia(f"media/{index}.jpg", "photo") for index in range(11))
+    )
+    targets = (PublishTarget("telegram", "-1001", "channel", "Основной"),)
+
+    with pytest.raises(SubmissionError, match="не больше 10"):
+        save_submission(draft, targets, session_factory)
 
 
 def test_instagram_rejects_text_only_submission() -> None:
@@ -65,8 +75,8 @@ def test_instagram_rejects_text_only_submission() -> None:
 def test_instagram_story_rejects_multiple_media() -> None:
     draft = PostDraft(
         media=(
-            DraftMedia("first", "photo", "media/first.jpg"),
-            DraftMedia("second", "photo", "media/second.jpg"),
+            DraftMedia("media/first.jpg", "photo"),
+            DraftMedia("media/second.jpg", "photo"),
         )
     )
     targets = (PublishTarget("instagram", "self", "story", "История"),)
@@ -75,22 +85,10 @@ def test_instagram_story_rejects_multiple_media() -> None:
         save_submission(draft, targets)
 
 
-def test_instagram_feed_rejects_more_than_ten_media() -> None:
-    draft = PostDraft(
-        media=tuple(
-            DraftMedia(str(index), "photo", f"media/{index}.jpg") for index in range(11)
-        )
-    )
-    targets = (PublishTarget("instagram", "self", "feed", "Лента"),)
-
-    with pytest.raises(SubmissionError, match="не более 10"):
-        save_submission(draft, targets)
-
-
 def test_instagram_rejects_too_long_caption() -> None:
     draft = PostDraft(
         caption="a" * 2201,
-        media=(DraftMedia("photo", "photo", "media/photo.jpg"),),
+        media=(DraftMedia("media/photo.jpg", "photo"),),
     )
     targets = (PublishTarget("instagram", "self", "feed", "Лента"),)
 
@@ -109,8 +107,8 @@ def test_tiktok_rejects_text_only_submission() -> None:
 def test_tiktok_rejects_mixed_media() -> None:
     draft = PostDraft(
         media=(
-            DraftMedia("photo", "photo", "media/photo.jpg"),
-            DraftMedia("video", "video", "media/video.mp4"),
+            DraftMedia("media/photo.jpg", "photo"),
+            DraftMedia("media/video.mp4", "video"),
         )
     )
     targets = (PublishTarget("tiktok", "self", "feed", "TikTok"),)

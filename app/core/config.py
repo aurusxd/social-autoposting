@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 import yaml
 
+from app.core.security import PasswordFormatError, validate_password_hash
+
 Platform = Literal["telegram", "whatsapp", "instagram", "tiktok"]
 TargetKind = Literal["channel", "group", "feed", "story"]
 
@@ -58,9 +60,20 @@ class TikTokConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class WebConfig:
+    username: str
+    password: str
+    password_hash: str
+    secret_key: str
+    session_max_age: int
+    max_upload_bytes: int
+    secure_cookies: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     bot_token: str
-    owner_id: int
+    web: WebConfig
     telegram_api: TelegramAPIConfig
     targets: tuple[PublishTarget, ...]
     whatsapp: WhatsAppConfig | None
@@ -79,23 +92,14 @@ def load_config(
     if not token:
         raise ConfigError("TELEGRAM_BOT_TOKEN is required")
 
-    owner_id_raw = os.getenv("TELEGRAM_OWNER_ID", "").strip()
-    if not owner_id_raw:
-        raise ConfigError("TELEGRAM_OWNER_ID is required")
-    try:
-        owner_id = int(owner_id_raw)
-    except ValueError as error:
-        raise ConfigError("TELEGRAM_OWNER_ID must be an integer") from error
-    if owner_id <= 0:
-        raise ConfigError("TELEGRAM_OWNER_ID must be a positive integer")
-
+    web = _web_config()
     telegram_api = _telegram_api_config()
     whatsapp = _whatsapp_config(raw)
     instagram = _instagram_config(raw)
     tiktok = _tiktok_config(raw)
     return AppConfig(
         bot_token=token,
-        owner_id=owner_id,
+        web=web,
         telegram_api=telegram_api,
         targets=targets,
         whatsapp=whatsapp,
@@ -220,6 +224,44 @@ def _whatsapp_config(raw: dict[str, Any]) -> WhatsAppConfig | None:
         request_timeout=_environment_int("WHAPI_REQUEST_TIMEOUT", 120),
         media_max_bytes=_environment_int("WHAPI_MEDIA_MAX_BYTES", 100 * 1024**2),
         target_limit=_environment_int("WHATSAPP_TARGET_LIMIT", 50),
+    )
+
+
+def _web_config() -> WebConfig:
+    username = os.getenv("WEB_ADMIN_USERNAME", "admin").strip()
+    if not username:
+        raise ConfigError("WEB_ADMIN_USERNAME must not be empty")
+
+    password = os.getenv("WEB_ADMIN_PASSWORD", "").strip()
+    password_hash = os.getenv("WEB_ADMIN_PASSWORD_HASH", "").strip()
+    if not password and not password_hash:
+        raise ConfigError(
+            "WEB_ADMIN_PASSWORD or WEB_ADMIN_PASSWORD_HASH is required "
+            "to sign in to the control panel"
+        )
+    if password_hash:
+        # Fail at startup rather than on the first login attempt.
+        try:
+            validate_password_hash(password_hash)
+        except PasswordFormatError as error:
+            raise ConfigError(f"WEB_ADMIN_PASSWORD_HASH is invalid: {error}") from error
+        password = ""
+
+    secret_key = os.getenv("WEB_SECRET_KEY", "").strip()
+    if len(secret_key) < 32:
+        raise ConfigError(
+            "WEB_SECRET_KEY must be at least 32 characters; generate one with "
+            'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        )
+
+    return WebConfig(
+        username=username,
+        password=password,
+        password_hash=password_hash,
+        secret_key=secret_key,
+        session_max_age=_environment_int("WEB_SESSION_MAX_AGE", 7 * 24 * 3600),
+        max_upload_bytes=_environment_int("WEB_MAX_UPLOAD_BYTES", 2000 * 1024**2),
+        secure_cookies=_environment_bool("WEB_SECURE_COOKIES", default=False),
     )
 
 

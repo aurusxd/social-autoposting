@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.bot.models import PostDraft
 from app.core.config import PublishTarget
+from app.core.drafts import MEDIA_LIMIT, PostDraft
 from app.database.database import SessionLocal
 from app.database.models import MediaFile, Post, PublishJob
 
@@ -29,7 +29,9 @@ def save_submission(
         raise SubmissionError("Черновик пуст")
     if not targets:
         raise SubmissionError("Нужно выбрать хотя бы одну площадку")
-    if any(media.file_path is None for media in draft.media):
+    if len(draft.media) > MEDIA_LIMIT:
+        raise SubmissionError(f"В одном посте не больше {MEDIA_LIMIT} файлов")
+    if any(not media.file_path for media in draft.media):
         raise SubmissionError("Не все медиафайлы сохранены")
     if any(target.platform == "instagram" for target in targets):
         _validate_instagram_draft(draft, targets)
@@ -49,9 +51,9 @@ def save_submission(
         session.add_all(
             MediaFile(
                 post_id=post.id,
-                file_path=media.file_path or "",
+                file_path=media.file_path,
                 media_type=media.media_type,
-                tg_file_id=media.file_id,
+                tg_file_id=None,
                 position=position,
             )
             for position, media in enumerate(draft.media)
@@ -91,14 +93,8 @@ def _validate_instagram_draft(
         and len(draft.media) != 1
     ):
         raise SubmissionError("Для Instagram Story выберите ровно один файл")
-    if (
-        any(
-            target.platform == "instagram" and target.kind == "feed"
-            for target in targets
-        )
-        and len(draft.media) > 10
-    ):
-        raise SubmissionError("Карусель Instagram поддерживает не более 10 файлов")
+    # A feed carousel also tops out at ten files, which is exactly MEDIA_LIMIT,
+    # so the shared check above already covers it.
 
 
 def _validate_tiktok_draft(draft: PostDraft) -> None:

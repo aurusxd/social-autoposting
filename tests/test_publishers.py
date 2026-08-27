@@ -14,6 +14,7 @@ from app.publishers.fakes import FakePublisher
 from app.publishers.instagram_publisher import InstagramPublisher
 from app.publishers.tiktok_publisher import TikTokPublisher
 from app.publishers.whatsapp_publisher import WhatsAppPublisher
+from tests.factories import web_config
 
 
 def _telegram_api() -> TelegramAPIConfig:
@@ -40,7 +41,7 @@ def test_fake_publisher_records_calls_and_result() -> None:
 def test_publisher_factory_registers_enabled_instagram() -> None:
     config = AppConfig(
         bot_token="telegram-token",
-        owner_id=123,
+        web=web_config(),
         telegram_api=_telegram_api(),
         targets=(),
         whatsapp=None,
@@ -62,7 +63,7 @@ def test_publisher_factory_registers_enabled_instagram() -> None:
 def test_publisher_factory_registers_enabled_tiktok() -> None:
     config = AppConfig(
         bot_token="telegram-token",
-        owner_id=123,
+        web=web_config(),
         telegram_api=_telegram_api(),
         targets=(),
         whatsapp=None,
@@ -87,7 +88,7 @@ def test_publisher_factory_registers_enabled_tiktok() -> None:
 def test_publisher_factory_registers_enabled_whatsapp() -> None:
     config = AppConfig(
         bot_token="telegram-token",
-        owner_id=123,
+        web=web_config(),
         telegram_api=_telegram_api(),
         targets=(),
         whatsapp=WhatsAppConfig(

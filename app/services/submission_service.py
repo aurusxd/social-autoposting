@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import PublishTarget
 from app.core.drafts import MEDIA_LIMIT, PostDraft
+from app.core.scheduling import normalize_schedule
 from app.database.database import SessionLocal
 from app.database.models import MediaFile, Post, PublishJob
 
@@ -18,12 +20,14 @@ class SubmissionError(ValueError):
 class SubmissionResult:
     post_id: int
     job_ids: tuple[int, ...]
+    scheduled_at: datetime | None = None
 
 
 def save_submission(
     draft: PostDraft,
     targets: tuple[PublishTarget, ...],
     session_factory: sessionmaker[Session] = SessionLocal,
+    scheduled_at: datetime | None = None,
 ) -> SubmissionResult:
     if not draft.has_content:
         raise SubmissionError("Черновик пуст")
@@ -40,10 +44,14 @@ def save_submission(
     if any(target.platform == "whatsapp" for target in targets):
         _validate_whatsapp_draft(draft)
 
+    planned_at = normalize_schedule(scheduled_at)
+    job_status = "scheduled" if planned_at else "pending"
+
     with session_factory.begin() as session:
         post = Post(
             caption=draft.caption or None,
-            status="queued",
+            status="scheduled" if planned_at else "queued",
+            scheduled_at=planned_at,
         )
         session.add(post)
         session.flush()
@@ -65,6 +73,7 @@ def save_submission(
                 platform=target.platform,
                 target_key=target.key,
                 target_kind=target.kind,
+                status=job_status,
             )
             for target in targets
         ]
@@ -74,6 +83,7 @@ def save_submission(
         return SubmissionResult(
             post_id=post.id,
             job_ids=tuple(job.id for job in jobs),
+            scheduled_at=planned_at,
         )
 
 

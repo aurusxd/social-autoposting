@@ -467,6 +467,61 @@ code {
   flex: none;
 }
 
+/* Schedule ------------------------------------------------------------ */
+
+.schedule-modes {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.schedule-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.schedule-mode:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
+}
+
+.schedule-mode input {
+  accent-color: var(--accent);
+  width: 18px;
+  height: 18px;
+}
+
+.schedule-presets {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.schedule-presets .button {
+  padding: 7px 12px;
+  font-size: 0.88rem;
+}
+
+.schedule-fields .field {
+  max-width: 280px;
+}
+
+.schedule-planned {
+  margin: 0 0 12px;
+}
+
+.text-scheduled {
+  color: var(--warning);
+}
+
 /* Actions ------------------------------------------------------------ */
 
 .composer-actions {
@@ -601,7 +656,8 @@ code {
 
 .badge-queued,
 .badge-pending,
-.badge-in_progress {
+.badge-in_progress,
+.badge-scheduled {
   color: var(--warning);
   border-color: var(--warning);
 }

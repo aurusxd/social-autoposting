@@ -7,7 +7,7 @@
     <h2 class="card-title">Пост #{{ post.id }}</h2>
     <span class="badge badge-{{ post.status }}">{{ post.status_label }}</span>
   </div>
-  <p class="hint">{{ post.created_at.strftime('%d.%m.%Y %H:%M') }}</p>
+  <p class="hint">Создан {{ post.created_label }}</p>
 
   {% if post.caption %}
   <pre class="caption">{{ post.caption }}</pre>
@@ -29,6 +29,28 @@
   </div>
   {% endif %}
 </section>
+
+{% if post.status == 'scheduled' %}
+<section class="card" id="schedule-card">
+  <div class="card-head">
+    <h2 class="card-title">Отложенная публикация</h2>
+    <span class="hint">время московское ({{ timezone_label }})</span>
+  </div>
+
+  <p class="schedule-planned">Запланировано на <strong>{{ post.scheduled_label }}</strong></p>
+
+  <label class="field">
+    <span class="field-label">Новое время ({{ timezone_label }})</span>
+    <input id="schedule-at" class="input" type="datetime-local" step="60"
+           value="{{ schedule_input }}">
+  </label>
+
+  <div class="composer-buttons">
+    <button type="button" id="reschedule" class="button">Перенести</button>
+    <button type="button" id="publish-now" class="button button-primary">Опубликовать сейчас</button>
+  </div>
+</section>
+{% endif %}
 
 <section class="card">
   <div class="card-head">
@@ -57,12 +79,13 @@
   <div class="card-head">
     <h2 class="card-title">Управление</h2>
   </div>
-  <p class="hint">Удаление уберёт пост, вложения и историю заданий. Пока задания в работе, удалить нельзя.</p>
+  <p class="hint">Удаление уберёт пост, вложения и историю заданий — так же отменяется и отложенная публикация. Пока задания в работе, удалить нельзя.</p>
   <button type="button" id="delete-post" class="button button-danger">Удалить пост</button>
   <a class="button button-ghost" href="/history">К истории</a>
 </section>
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/moscow.js" defer></script>
 <script src="/static/js/post.js" defer></script>
 {% endblock %}

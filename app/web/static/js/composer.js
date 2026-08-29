@@ -18,6 +18,9 @@
   const submitButton = document.getElementById("submit");
   const resetButton = document.getElementById("reset");
   const message = document.getElementById("composer-message");
+  const scheduleFields = document.getElementById("schedule-fields");
+  const scheduleInput = document.getElementById("schedule-at");
+  const scheduleModes = form.querySelectorAll('input[name="schedule-mode"]');
 
   /** @type {{token: string, fileName: string, mediaType: string, sizeLabel: string, previewUrl: string}[]} */
   const media = [];
@@ -260,6 +263,39 @@
     }
   });
 
+  // Schedule -------------------------------------------------------------
+
+  const DEFAULT_DELAY_MINUTES = 30;
+
+  const scheduleMode = () =>
+    form.querySelector('input[name="schedule-mode"]:checked')?.value || "now";
+
+  const applySchedule = () => {
+    const later = scheduleMode() === "later";
+    scheduleFields.hidden = !later;
+    if (later) {
+      // A date already in the past is refused by the server, so never offer one.
+      scheduleInput.min = window.MoscowTime.inputValue(1);
+      if (!scheduleInput.value) {
+        scheduleInput.value = window.MoscowTime.inputValue(DEFAULT_DELAY_MINUTES);
+      }
+    }
+    submitButton.textContent = later ? "Запланировать" : "Опубликовать";
+    updateSubmitState();
+  };
+
+  scheduleModes.forEach((mode) => mode.addEventListener("change", applySchedule));
+  scheduleInput.addEventListener("input", updateSubmitState);
+
+  scheduleFields.addEventListener("click", (event) => {
+    const delay = Number(event.target.dataset?.delay);
+    if (!delay) {
+      return;
+    }
+    scheduleInput.value = window.MoscowTime.inputValue(delay);
+    updateSubmitState();
+  });
+
   // Targets ------------------------------------------------------------
 
   const renderTargets = (groups) => {
@@ -372,7 +408,8 @@
     const ready =
       uploading === 0 &&
       selectedTargets().length > 0 &&
-      (caption.value.trim().length > 0 || media.length > 0);
+      (caption.value.trim().length > 0 || media.length > 0) &&
+      (scheduleMode() === "now" || Boolean(scheduleInput.value));
     submitButton.disabled = !ready;
   }
 
@@ -386,8 +423,14 @@
       return;
     }
 
+    const later = scheduleMode() === "later";
+    if (later && !scheduleInput.value) {
+      say("Укажите дату и время публикации", "error");
+      return;
+    }
+
     submitButton.disabled = true;
-    say("Публикую…");
+    say(later ? "Планирую…" : "Публикую…");
     try {
       const response = await fetch("/api/posts", {
         method: "POST",
@@ -396,6 +439,8 @@
           caption: caption.value,
           media: media.map((item) => item.token),
           targets,
+          // Bare Moscow wall clock; the server converts it to UTC.
+          scheduled_at: later ? scheduleInput.value : null,
         }),
       });
       if (expired(response)) {
@@ -423,10 +468,12 @@
     targetsBox.querySelectorAll('input[name="targets"]').forEach((box) => {
       box.checked = false;
     });
+    form.querySelector('input[name="schedule-mode"][value="now"]').checked = true;
+    scheduleInput.value = "";
     say("");
-    updateSubmitState();
+    applySchedule();
   });
 
   renderMedia();
-  updateSubmitState();
+  applySchedule();
 })();

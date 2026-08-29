@@ -7,6 +7,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
 from loguru import logger
 
 from app.core.drafts import DraftMedia, PostDraft
+from app.core.scheduling import ScheduleError, normalize_schedule
 from app.database.repositories.posts_repo import PostRepository
 from app.services.dispatch_service import DispatchResult, dispatch_jobs
 from app.services.media_storage import MediaError, delete_media, save_upload
@@ -25,6 +26,8 @@ from app.web.schemas import (
     MediaTokenIn,
     PostCreatedOut,
     PostCreateIn,
+    ScheduleIn,
+    ScheduleOut,
     TargetsOut,
 )
 from app.web.security import UploadTokenError
@@ -123,8 +126,14 @@ async def create_post(
 
     draft = PostDraft(caption=payload.caption.strip(), media=media)
     try:
-        submission = await asyncio.to_thread(save_submission, draft, targets, factory)
-    except SubmissionError as error:
+        submission = await asyncio.to_thread(
+            save_submission,
+            draft,
+            targets,
+            factory,
+            payload.scheduled_at,
+        )
+    except (SubmissionError, ScheduleError) as error:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
     except Exception as error:
         logger.exception("Failed to persist a post from the control panel")
@@ -133,13 +142,56 @@ async def create_post(
             "Не удалось сохранить пост. Попробуйте ещё раз.",
         ) from error
 
-    result = await _dispatch(submission.job_ids)
+    # A scheduled post waits in SQLite; beat hands it to Celery when it is due.
+    result = (
+        DispatchResult((), ())
+        if submission.scheduled_at
+        else await _dispatch(submission.job_ids)
+    )
     return PostCreatedOut(
         post_id=submission.post_id,
         job_count=len(submission.job_ids),
         dispatched=len(result.dispatched),
         failed=len(result.failed),
+        scheduled_at=submission.scheduled_at,
     )
+
+
+@router.post("/posts/{post_id}/schedule", response_model=ScheduleOut)
+async def reschedule_post(
+    user: CurrentUser,
+    database: Database,
+    post_id: int,
+    payload: ScheduleIn,
+) -> ScheduleOut:
+    """Move a waiting post to another time, or publish it immediately."""
+    del user
+    repository = PostRepository(database)
+    post = repository.get_post(post_id)
+    if post is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Пост не найден")
+    if post.status != "scheduled":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Пост уже не ждёт публикации",
+        )
+
+    try:
+        planned_at = normalize_schedule(payload.scheduled_at)
+    except ScheduleError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+
+    if planned_at is None:
+        job_ids = repository.publish_now(post_id)
+        database.commit()
+        if job_ids:
+            await _dispatch(tuple(job_ids))
+        return ScheduleOut(post_id=post_id, scheduled_at=None, job_ids=job_ids)
+
+    if not repository.reschedule(post_id, planned_at):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Пост уже не ждёт публикации")
+    database.commit()
+    return ScheduleOut(post_id=post_id, scheduled_at=planned_at, job_ids=[])
 
 
 @router.post("/posts/{post_id}/retry", response_model=JobIdsOut)

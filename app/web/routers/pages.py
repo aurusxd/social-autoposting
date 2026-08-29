@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, HTMLResponse
 
 from app.core.drafts import MEDIA_LIMIT, DraftMedia
+from app.core.scheduling import MOSCOW_LABEL, format_moscow, moscow_input_value
 from app.database.models import MediaFile, Post
 from app.database.repositories.posts_repo import PostRepository
 from app.services.media_storage import resolve_media_path
@@ -17,7 +18,7 @@ from app.web.security import UploadTokenError
 router = APIRouter()
 
 PAGE_SIZE = 20
-POST_STATUSES = ("queued", "done", "failed")
+POST_STATUSES = ("scheduled", "queued", "done", "failed")
 
 
 @router.get("/healthz")
@@ -44,6 +45,7 @@ async def composer(
             "truncated": resolved.truncated,
             "media_limit": MEDIA_LIMIT,
             "max_upload_mb": config.web.max_upload_bytes // 1024**2,
+            "timezone_label": MOSCOW_LABEL,
         },
     )
 
@@ -102,6 +104,8 @@ async def post_details(
             "user": user,
             "active": "history",
             "post": _post_summary(post),
+            "timezone_label": MOSCOW_LABEL,
+            "schedule_input": moscow_input_value(post.scheduled_at),
             "media": [
                 {
                     "id": media.id,
@@ -175,6 +179,9 @@ def _post_summary(post: Post) -> dict[str, object]:
     return {
         "id": post.id,
         "created_at": post.created_at,
+        "created_label": format_moscow(post.created_at),
+        "scheduled_at": post.scheduled_at,
+        "scheduled_label": format_moscow(post.scheduled_at),
         "status": post.status,
         "status_label": status_label(post.status),
         "caption": caption,

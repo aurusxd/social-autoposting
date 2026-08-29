@@ -46,6 +46,7 @@ app/
   core/
     config.py           # загрузка config.yaml + .env
     drafts.py           # черновик поста и его медиа
+    scheduling.py       # московское время публикации и его перевод в UTC
     security.py         # PBKDF2 для пароля панели
   database/
     database.py          # SQLAlchemy engine + сессии SQLite
@@ -58,8 +59,8 @@ app/
     submission_service.py # сохранение поста и publish_jobs одной транзакцией
     dispatch_service.py   # отправка идентификаторов заданий в Celery
   worker/
-    celery_app.py         # конфигурация Celery и Redis broker
-    tasks.py              # claim, публикация, ретраи и crash-recovery
+    celery_app.py         # конфигурация Celery, Redis broker и расписание beat
+    tasks.py              # claim, публикация, ретраи, crash-recovery, отложенные посты
   publishers/
     base.py               # Protocol Publisher
     telegram_publisher.py
@@ -83,8 +84,11 @@ CREATE TABLE posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     caption TEXT,
-    status TEXT NOT NULL DEFAULT 'draft'  -- draft | queued | done | failed
+    status TEXT NOT NULL DEFAULT 'draft',  -- draft | scheduled | queued | done | failed
+    scheduled_at TEXT  -- UTC-момент отложенной публикации, NULL — сразу
 );
+
+CREATE INDEX idx_posts_scheduled_at ON posts(scheduled_at);
 
 CREATE TABLE media_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,7 +105,7 @@ CREATE TABLE publish_jobs (
     platform TEXT NOT NULL,        -- telegram | whatsapp | instagram | tiktok
     target_key TEXT NOT NULL,      -- id/jid цели из config.yaml, "self" для instagram/tiktok
     target_kind TEXT NOT NULL,     -- channel | group | feed | story
-    status TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | done | failed
+    status TEXT NOT NULL DEFAULT 'pending',  -- scheduled | pending | in_progress | done | failed
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -117,6 +121,8 @@ CREATE INDEX idx_publish_jobs_status ON publish_jobs(status);
 ## Контракты очереди
 
 Таблица `publish_jobs` — источник истины о состоянии публикации, а Redis передаёт Celery только `job_id`. После сохранения поста бот отправляет `worker.publish_job(job_id)`. Worker атомарно переводит только `pending`-задание в `in_progress`, вызывает `Publisher.publish`, затем фиксирует `done`, снова `pending` для ретрая или `failed` (+ `last_error`, `attempts`). Если Redis временно недоступен, задание остаётся в SQLite и будет отправлено при следующем запуске worker.
+
+Отложенные публикации не держатся в Celery: пост со временем публикации получает `posts.status = 'scheduled'`, его задания — `publish_jobs.status = 'scheduled'`, и очередь их не видит. Celery beat каждые `SCHEDULER_INTERVAL_SECONDS` (по умолчанию 30) запускает `worker.release_due_posts`; задача переводит задания созревших постов в `pending` и отправляет их worker. `claim_pending` берёт только `pending`, поэтому запланированное задание нельзя опубликовать раньше срока даже повторной доставкой. Пропущенное из-за простоя время отрабатывается при старте worker. Время публикации задаётся в московском поясе (UTC+3 без перехода на летнее время), хранится в UTC.
 
 Ретраи: до 3 попыток с задержками 10 и 60 секунд через Celery countdown. После третьей неудачи — `status = 'failed'`, дальше задание не трогается автоматически.
 

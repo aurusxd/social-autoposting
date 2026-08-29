@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 from app.core.drafts import MEDIA_LIMIT
@@ -41,6 +43,8 @@ class PostCreateIn(BaseModel):
     caption: str = ""
     media: list[str] = Field(default_factory=list, max_length=MEDIA_LIMIT)
     targets: list[str] = Field(min_length=1)
+    # Absent or null publishes at once; the panel sends an offset-aware moment.
+    scheduled_at: datetime | None = None
 
 
 class PostCreatedOut(BaseModel):
@@ -48,6 +52,19 @@ class PostCreatedOut(BaseModel):
     job_count: int
     dispatched: int
     failed: int
+    scheduled_at: datetime | None = None
+
+
+class ScheduleIn(BaseModel):
+    """A new time for a waiting post, or null to publish it right away."""
+
+    scheduled_at: datetime | None = None
+
+
+class ScheduleOut(BaseModel):
+    post_id: int
+    scheduled_at: datetime | None
+    job_ids: list[int]
 
 
 class JobIdsOut(BaseModel):

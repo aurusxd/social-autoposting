@@ -48,6 +48,39 @@
     </div>
   </section>
 
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title">Время публикации</h2>
+      <span class="hint">время московское ({{ timezone_label }})</span>
+    </div>
+
+    <div class="schedule-modes">
+      <label class="schedule-mode">
+        <input type="radio" name="schedule-mode" value="now" checked>
+        <span>Сразу</span>
+      </label>
+      <label class="schedule-mode">
+        <input type="radio" name="schedule-mode" value="later">
+        <span>Отложить</span>
+      </label>
+    </div>
+
+    <div id="schedule-fields" class="schedule-fields" hidden>
+      <div class="schedule-presets">
+        <button type="button" class="button button-ghost" data-delay="5">+5 мин</button>
+        <button type="button" class="button button-ghost" data-delay="30">+30 мин</button>
+        <button type="button" class="button button-ghost" data-delay="60">+1 час</button>
+        <button type="button" class="button button-ghost" data-delay="180">+3 часа</button>
+        <button type="button" class="button button-ghost" data-delay="1440">+1 день</button>
+      </div>
+      <label class="field">
+        <span class="field-label">Дата и время ({{ timezone_label }})</span>
+        <input id="schedule-at" class="input" type="datetime-local" step="60">
+      </label>
+      <p class="hint">Пост дождётся своего времени, даже если панель закрыта.</p>
+    </div>
+  </section>
+
   <div class="composer-actions">
     <p id="composer-message" class="composer-message" role="status"></p>
     <div class="composer-buttons">
@@ -59,5 +92,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/moscow.js" defer></script>
 <script src="/static/js/composer.js" defer></script>
 {% endblock %}

@@ -86,6 +86,44 @@ class PublishJobRepository:
 
         return self.session.scalar(statement)
 
+    def release_due(self, now: datetime) -> list[int]:
+        """Move jobs of posts whose scheduled time has come into the queue.
+
+        Only the status changes: `scheduled_at` stays on the post so the
+        history keeps showing when the publication was planned for.
+        """
+        post_ids = list(
+            self.session.scalars(
+                select(Post.id).where(
+                    Post.status == "scheduled",
+                    Post.scheduled_at.is_not(None),
+                    Post.scheduled_at <= now,
+                )
+            )
+        )
+        if not post_ids:
+            return []
+
+        job_ids = list(
+            self.session.scalars(
+                update(PublishJob)
+                .where(
+                    PublishJob.status == "scheduled",
+                    PublishJob.post_id.in_(post_ids),
+                )
+                .values(status="pending", updated_at=func.now())
+                .returning(PublishJob.id)
+                .execution_options(synchronize_session=False)
+            )
+        )
+        self.session.execute(
+            update(Post)
+            .where(Post.id.in_(post_ids))
+            .values(status="queued")
+            .execution_options(synchronize_session=False)
+        )
+        return job_ids
+
     def pending_ids(self) -> list[int]:
         statement = (
             select(PublishJob.id)
@@ -118,6 +156,8 @@ class PublishJobRepository:
         )
         if statuses & {"pending", "in_progress"}:
             status = "queued"
+        elif "scheduled" in statuses:
+            status = "scheduled"
         elif "failed" in statuses:
             status = "failed"
         else:

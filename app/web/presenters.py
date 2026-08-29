@@ -18,6 +18,7 @@ KIND_LABELS = {
 
 STATUS_LABELS = {
     "draft": "черновик",
+    "scheduled": "запланировано",
     "queued": "в очереди",
     "pending": "ожидает",
     "in_progress": "публикуется",

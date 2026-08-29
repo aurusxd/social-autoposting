@@ -25,11 +25,12 @@
       <a class="post-link" href="/posts/{{ post.id }}">
         <div class="post-head">
           <span class="badge badge-{{ post.status }}">{{ post.status_label }}</span>
-          <span class="post-date">{{ post.created_at.strftime('%d.%m.%Y %H:%M') }}</span>
+          <span class="post-date">{{ post.created_label }}</span>
           <span class="post-id">#{{ post.id }}</span>
         </div>
         <p class="post-preview">{{ post.preview or 'Без текста' }}</p>
         <div class="post-meta">
+          {% if post.scheduled_at %}<span class="text-scheduled">🕒 {{ post.scheduled_label }}</span>{% endif %}
           {% if post.photo_count %}<span>🖼 {{ post.photo_count }}</span>{% endif %}
           {% if post.video_count %}<span>🎬 {{ post.video_count }}</span>{% endif %}
           <span>{{ post.done_count }}/{{ post.job_count }} площадок</span>

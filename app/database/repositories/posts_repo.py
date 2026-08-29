@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
@@ -68,6 +70,40 @@ class PostRepository:
                 update(Post)
                 .where(Post.id == post_id)
                 .values(status="queued")
+                .execution_options(synchronize_session=False)
+            )
+        return job_ids
+
+    def reschedule(self, post_id: int, scheduled_at: datetime) -> bool:
+        """Move a still-waiting post to another time."""
+        statement = (
+            update(Post)
+            .where(Post.id == post_id, Post.status == "scheduled")
+            .values(scheduled_at=scheduled_at)
+            .returning(Post.id)
+            .execution_options(synchronize_session=False)
+        )
+        return self.session.scalar(statement) is not None
+
+    def publish_now(self, post_id: int) -> list[int]:
+        """Queue a scheduled post right away and drop its planned time."""
+        job_ids = list(
+            self.session.scalars(
+                update(PublishJob)
+                .where(
+                    PublishJob.post_id == post_id,
+                    PublishJob.status == "scheduled",
+                )
+                .values(status="pending", updated_at=func.now())
+                .returning(PublishJob.id)
+                .execution_options(synchronize_session=False)
+            )
+        )
+        if job_ids:
+            self.session.execute(
+                update(Post)
+                .where(Post.id == post_id)
+                .values(status="queued", scheduled_at=None)
                 .execution_options(synchronize_session=False)
             )
         return job_ids

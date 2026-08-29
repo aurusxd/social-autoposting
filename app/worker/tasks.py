@@ -8,6 +8,7 @@ from celery.signals import worker_ready
 from loguru import logger
 
 from app.core.config import load_config
+from app.core.scheduling import utc_now
 from app.database.database import SessionLocal
 from app.database.repositories.publish_jobs_repo import PublishJobRepository
 from app.publishers import (
@@ -44,6 +45,26 @@ class JobOutcome:
 @celery.task(name="worker.healthcheck")
 def healthcheck() -> None:
     logger.info("Celery worker is alive")
+
+
+@celery.task(name="worker.release_due_posts")
+def release_due_posts() -> int:
+    """Queue every post whose scheduled time has passed.
+
+    Beat runs this on a short interval, so a delayed post survives a restart of
+    any component: the due time lives in SQLite, not in a pending Celery task.
+    """
+    job_ids = release_due_jobs()
+    for job_id in job_ids:
+        _enqueue(job_id)
+    if job_ids:
+        logger.info("Released {} scheduled jobs", len(job_ids))
+    return len(job_ids)
+
+
+def release_due_jobs() -> tuple[int, ...]:
+    with SessionLocal.begin() as session:
+        return tuple(PublishJobRepository(session).release_due(utc_now()))
 
 
 @celery.task(bind=True, name="worker.publish_job", max_retries=2)
@@ -155,6 +176,10 @@ def run_publisher(job: ClaimedJob) -> PublishResult:
 
 @worker_ready.connect
 def dispatch_pending_on_worker_start(**_: object) -> None:
+    # A post whose time passed while everything was down is due right now, so
+    # release it before collecting the queue instead of waiting for beat.
+    release_due_jobs()
+
     with SessionLocal.begin() as session:
         repository = PublishJobRepository(session)
         recovered_ids = repository.recover_stale(STALE_JOB_TIMEOUT_SECONDS)
@@ -162,10 +187,14 @@ def dispatch_pending_on_worker_start(**_: object) -> None:
 
     job_ids = tuple(dict.fromkeys((*recovered_ids, *pending_ids)))
     for job_id in job_ids:
-        publish_job.apply_async(
-            args=(job_id,),
-            task_id=f"publish-job-{job_id}",
-            retry=False,
-        )
+        _enqueue(job_id)
 
     logger.info("Dispatched {} pending jobs on worker start", len(job_ids))
+
+
+def _enqueue(job_id: int) -> None:
+    publish_job.apply_async(
+        args=(job_id,),
+        task_id=f"publish-job-{job_id}",
+        retry=False,
+    )

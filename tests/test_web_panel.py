@@ -346,7 +346,12 @@ def test_the_login_page_renders(client: TestClient) -> None:
 
 
 def test_the_static_assets_are_served(client: TestClient) -> None:
-    for path in ("/static/css/app.css", "/static/js/composer.js", "/static/js/post.js"):
+    for path in (
+        "/static/css/app.css",
+        "/static/js/composer.js",
+        "/static/js/post.js",
+        "/static/js/moscow.js",
+    ):
         response = client.get(path)
         assert response.status_code == 200, path
         assert response.content

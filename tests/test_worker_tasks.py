@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.scheduling import utc_now
 from app.database.models import Base, Post, PublishJob
 from app.publishers import PublishResult
 from app.worker import tasks
@@ -115,3 +118,70 @@ def test_non_retryable_error_fails_immediately(
 def test_celery_registers_worker_tasks() -> None:
     assert "worker.healthcheck" in tasks.celery.tasks
     assert "worker.publish_job" in tasks.celery.tasks
+    assert "worker.release_due_posts" in tasks.celery.tasks
+
+
+def test_beat_is_set_to_look_for_due_posts() -> None:
+    entry = tasks.celery.conf.beat_schedule["release-due-posts"]
+
+    assert entry["task"] == "worker.release_due_posts"
+    assert entry["schedule"] > 0
+
+
+def _create_scheduled_job(
+    factory: sessionmaker[Session],
+    ahead: timedelta,
+) -> tuple[int, int]:
+    with factory.begin() as session:
+        post = Post(
+            caption="Отложенный",
+            status="scheduled",
+            scheduled_at=utc_now() + ahead,
+        )
+        session.add(post)
+        session.flush()
+        job = PublishJob(
+            post_id=post.id,
+            platform="telegram",
+            target_key="-100123",
+            target_kind="channel",
+            status="scheduled",
+        )
+        session.add(job)
+        session.flush()
+        return post.id, job.id
+
+
+def test_beat_hands_a_due_post_to_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = _session_factory()
+    post_id, job_id = _create_scheduled_job(factory, timedelta(minutes=-1))
+    waiting_post_id, waiting_job_id = _create_scheduled_job(factory, timedelta(hours=1))
+    queued: list[int] = []
+    monkeypatch.setattr(tasks, "SessionLocal", factory)
+    monkeypatch.setattr(tasks, "_enqueue", queued.append)
+
+    released = tasks.release_due_posts()
+
+    assert released == 1
+    assert queued == [job_id]
+    assert _stored_statuses(factory, post_id, job_id) == ("queued", "pending", 0)
+    assert _stored_statuses(factory, waiting_post_id, waiting_job_id) == (
+        "scheduled",
+        "scheduled",
+        0,
+    )
+
+
+def test_beat_leaves_nothing_to_do_when_no_post_is_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = _session_factory()
+    _create_scheduled_job(factory, timedelta(hours=1))
+    queued: list[int] = []
+    monkeypatch.setattr(tasks, "SessionLocal", factory)
+    monkeypatch.setattr(tasks, "_enqueue", queued.append)
+
+    assert tasks.release_due_posts() == 0
+    assert queued == []

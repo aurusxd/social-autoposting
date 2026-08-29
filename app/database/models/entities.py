@@ -10,6 +10,7 @@ from app.database.models.base import Base
 
 class Post(Base):
     __tablename__ = "posts"
+    __table_args__ = (Index("idx_posts_scheduled_at", "scheduled_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -22,6 +23,8 @@ class Post(Base):
         default="draft",
         server_default="draft",
     )
+    # Naive UTC, like every other timestamp here. NULL means "publish at once".
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     media_files: Mapped[list[MediaFile]] = relationship(
         back_populates="post",

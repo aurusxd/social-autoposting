@@ -133,7 +133,10 @@ services:
         condition: service_healthy
     stop_grace_period: 15s
 
-  web:
+  # Named `panel`, not `web`: Compose publishes the service name as a network
+  # alias, and this container may share a network with somebody else's proxy
+  # that already routes `web` to their own frontend.
+  panel:
     <<: *app
     command:
       - uvicorn
@@ -169,11 +172,11 @@ services:
     # Only for a server dedicated to this project: it claims ports 80 and 443,
     # which on a shared host already belong to somebody else's reverse proxy.
     # Start it with `docker compose --profile standalone up -d`; behind an
-    # existing proxy leave it out and route to `web` instead.
+    # existing proxy leave it out and route to `panel` instead.
     profiles:
       - standalone
     depends_on:
-      web:
+      panel:
         condition: service_healthy
     ports:
       - "80:80"

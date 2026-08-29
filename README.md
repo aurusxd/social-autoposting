@@ -332,7 +332,7 @@ docker compose ps
 Посмотреть логи:
 
 ```bash
-docker compose logs -f web worker beat
+docker compose logs -f panel worker beat
 ```
 
 Обновить приложение после получения нового кода:
@@ -375,12 +375,12 @@ PROXY_NETWORK=biamino_internal
 docker compose -f compose.yaml -f compose.proxy.yaml up -d --build
 ```
 
-Теперь прокси видит панель по имени контейнера `social-autoposting-web-1` на
+Теперь прокси видит панель по имени контейнера `social-autoposting-panel-1` на
 порту 8000. Для Caddy достаточно дописать в Caddyfile блок:
 
 ```
 panel.example.com {
-    reverse_proxy social-autoposting-web-1:8000
+    reverse_proxy social-autoposting-panel-1:8000
 }
 ```
 
@@ -393,7 +393,7 @@ docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 Caddy сам выпустит сертификат Let's Encrypt для этого домена и будет продлевать
 его автоматически, так что шаги с certbot ниже не нужны. У Traefik ту же роль
 играют labels на сервисе, у чужого nginx — обычный `server` с
-`proxy_pass http://social-autoposting-web-1:8000`.
+`proxy_pass http://social-autoposting-panel-1:8000`.
 
 Панель принимает файлы до 2 ГБ, и они идут через прокси. У Caddy лимита на
 размер тела запроса по умолчанию нет, а вот у nginx он равен 1 МБ — там
@@ -406,7 +406,7 @@ WEB_SECURE_COOKIES=true
 ```
 
 ```bash
-docker compose -f compose.yaml -f compose.proxy.yaml up -d web
+docker compose -f compose.yaml -f compose.proxy.yaml up -d panel
 ```
 
 ## HTTPS для панели на отдельном сервере
@@ -468,7 +468,7 @@ docker compose -f compose.yaml -f compose.proxy.yaml up -d web
    ```
 
    ```bash
-   docker compose up -d web
+   docker compose up -d panel
    ```
 
 Сертификат живёт 90 дней. Продление — командой `renew` по расписанию; она

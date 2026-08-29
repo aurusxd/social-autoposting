@@ -2,7 +2,7 @@
 #
 #   docker compose -f compose.yaml -f compose.proxy.yaml up -d
 #
-# It puts `web` on the proxy's own Docker network, so the proxy can reach the
+# It puts `panel` on the proxy's own Docker network, so the proxy can reach the
 # panel by container name without the panel publishing anything to the host.
 # Set PROXY_NETWORK in .env to that network (`docker network ls` lists them).
 #
@@ -10,7 +10,7 @@
 # second server on the same ports would take the neighbouring site down.
 
 services:
-  web:
+  panel:
     networks:
       - default
       - proxy

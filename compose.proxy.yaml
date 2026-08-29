@@ -1,0 +1,21 @@
+# Overlay for a host where another reverse proxy already owns ports 80 and 443.
+#
+#   docker compose -f compose.yaml -f compose.proxy.yaml up -d
+#
+# It puts `web` on the proxy's own Docker network, so the proxy can reach the
+# panel by container name without the panel publishing anything to the host.
+# Set PROXY_NETWORK in .env to that network (`docker network ls` lists them).
+#
+# Nothing here starts nginx or certbot: TLS is the existing proxy's job, and a
+# second server on the same ports would take the neighbouring site down.
+
+services:
+  web:
+    networks:
+      - default
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:?PROXY_NETWORK is required, e.g. PROXY_NETWORK=biamino_internal}

@@ -296,25 +296,43 @@ SQLite, а не в очереди Celery: перезапуск worker, Redis и�
 cp .env.example .env
 nano .env
 nano config.yaml
-docker compose up -d --build
-docker compose ps
 ```
 
-Compose запускает локальный Telegram Bot API и Redis, применяет
-Alembic-миграции, затем поднимает Celery worker, Celery beat для отложенных
-публикаций, веб-панель и nginx. WhatsApp
-обслуживает облачный Whapi.Cloud, поэтому отдельных контейнеров под него нет.
-Наружу смотрит только nginx (порты 80 и 443); панель, внутренний Telegram API и
-Redis из интернета недоступны. SQLite, медиа, данные Redis и локального
-Telegram API сохраняются в именованных volumes и переживают пересоздание
-контейнеров.
+Дальше запуск зависит от того, свободны ли на сервере порты 80 и 443.
 
-После запуска панель открывается по адресу сервера: `http://IP-сервера/`.
+**Сервер только под этот проект.** Профиль `standalone` добавляет nginx,
+который слушает 80 и 443 и проксирует их на панель:
+
+```bash
+docker compose --profile standalone up -d --build
+```
+
+**На сервере уже есть свой реверс-прокси** (чужой сайт, панель управления
+хостингом и т. п.) — см. раздел «За существующим реверс-прокси» ниже. Без
+профиля nginx не поднимается, и стек ничего не занимает на хосте:
+
+```bash
+docker compose up -d --build
+```
+
+В обоих случаях Compose запускает локальный Telegram Bot API и Redis, применяет
+Alembic-миграции, затем поднимает Celery worker, Celery beat для отложенных
+публикаций и веб-панель. WhatsApp обслуживает облачный Whapi.Cloud, поэтому
+отдельных контейнеров под него нет. Панель, внутренний Telegram API и Redis
+портов на хосте не открывают — наружу смотрит только прокси. SQLite, медиа,
+данные Redis и локального Telegram API сохраняются в именованных volumes и
+переживают пересоздание контейнеров.
+
+Проверить, что поднялось:
+
+```bash
+docker compose ps
+```
 
 Посмотреть логи:
 
 ```bash
-docker compose logs -f web worker beat nginx
+docker compose logs -f web worker beat
 ```
 
 Обновить приложение после получения нового кода:
@@ -332,7 +350,70 @@ docker compose down
 Не используйте `docker compose down -v`, если хотите сохранить базу, медиа и
 очередь Redis.
 
-## HTTPS для панели
+## За существующим реверс-прокси
+
+Если порты 80 и 443 на сервере уже занял чужой прокси, забирать их нельзя —
+соседний сайт ляжет. Вместо этого панель подключается к сети этого прокси и
+становится для него обычным бэкендом. TLS в такой схеме — забота прокси; nginx
+и certbot из этого проекта не участвуют вообще.
+
+Узнайте, в какой сети работает прокси:
+
+```bash
+docker inspect ИМЯ-КОНТЕЙНЕРА-ПРОКСИ --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}'
+```
+
+Укажите её в `.env`:
+
+```dotenv
+PROXY_NETWORK=biamino_internal
+```
+
+Поднимите стек вместе с оверлеем [compose.proxy.yaml](compose.proxy.yaml):
+
+```bash
+docker compose -f compose.yaml -f compose.proxy.yaml up -d --build
+```
+
+Теперь прокси видит панель по имени контейнера `social-autoposting-web-1` на
+порту 8000. Для Caddy достаточно дописать в Caddyfile блок:
+
+```
+panel.example.com {
+    reverse_proxy social-autoposting-web-1:8000
+}
+```
+
+и перечитать конфиг — без перезапуска и простоя соседних сайтов:
+
+```bash
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+Caddy сам выпустит сертификат Let's Encrypt для этого домена и будет продлевать
+его автоматически, так что шаги с certbot ниже не нужны. У Traefik ту же роль
+играют labels на сервисе, у чужого nginx — обычный `server` с
+`proxy_pass http://social-autoposting-web-1:8000`.
+
+Панель принимает файлы до 2 ГБ, и они идут через прокси. У Caddy лимита на
+размер тела запроса по умолчанию нет, а вот у nginx он равен 1 МБ — там
+понадобится `client_max_body_size 2000m`.
+
+Когда HTTPS заработал, включите защищённые cookie:
+
+```dotenv
+WEB_SECURE_COOKIES=true
+```
+
+```bash
+docker compose -f compose.yaml -f compose.proxy.yaml up -d web
+```
+
+## HTTPS для панели на отдельном сервере
+
+Этот раздел — для случая, когда сервер отведён только под этот проект и панель
+работает за нашим nginx (профиль `standalone`). Если вы за чужим прокси,
+сертификат выпускает он, и всё описанное здесь пропускается.
 
 Пока панель работает по HTTP, пароль и cookie сессии идут по сети открытым
 текстом. На сервере, доступном из интернета, выпустите сертификат.

@@ -166,6 +166,12 @@ services:
 
   nginx:
     image: nginx:1.27-alpine
+    # Only for a server dedicated to this project: it claims ports 80 and 443,
+    # which on a shared host already belong to somebody else's reverse proxy.
+    # Start it with `docker compose --profile standalone up -d`; behind an
+    # existing proxy leave it out and route to `web` instead.
+    profiles:
+      - standalone
     depends_on:
       web:
         condition: service_healthy

@@ -342,30 +342,62 @@ docker compose down
 2. Впишите домен в `server_name` в
    [deploy/nginx/panel.conf](deploy/nginx/panel.conf) (в HTTPS-блоке) и
    поднимите стек: `docker compose up -d`.
-3. Выпустите сертификат через webroot, который уже отдаёт nginx:
+3. Убедитесь, что домен резолвится в этот сервер и порт 80 отвечает снаружи —
+   по нему Let's Encrypt проверит владение доменом. Если тут не `200`, certbot
+   упадёт на проверке:
 
    ```bash
-   docker run --rm -v social-autoposting_letsencrypt:/etc/letsencrypt -v social-autoposting_certbot_webroot:/var/www/certbot certbot/certbot certonly --webroot -w /var/www/certbot -d panel.example.com --email you@example.com --agree-tos --no-eff-email
+   dig +short panel.example.com && curl -sI http://panel.example.com/healthz | head -1
+   ```
+
+4. Выпустите сертификат через webroot, который уже отдаёт nginx. Подставьте
+   свой домен и **настоящий** email — адреса на `example.com` Let's Encrypt
+   отклоняет, а на указанный придут письма об истечении сертификата:
+
+   ```bash
+   docker run --rm -it -v social-autoposting_letsencrypt:/etc/letsencrypt -v social-autoposting_certbot_webroot:/var/www/certbot certbot/certbot certonly --webroot -w /var/www/certbot -d panel.example.com --email you@your-mail.com --agree-tos --no-eff-email --non-interactive
    ```
 
    Имена томов — это имя проекта Compose (`social-autoposting`) плюс имя тома;
-   проверить можно через `docker volume ls`.
+   проверить можно через `docker volume ls`. Флаг `-it` обязателен: без него
+   certbot останавливается с «Certbot doesn't appear to be running in a
+   terminal».
 
-4. Раскомментируйте HTTPS-блок и редирект с 80 порта в том же файле, поправьте
-   пути к сертификату под свой домен.
-5. Включите защищённые cookie в `.env` и перезапустите:
+5. Раскомментируйте HTTPS-блок и редирект с 80 порта в том же файле, поправьте
+   пути к сертификату под свой домен. Файл примонтирован в контейнер, поэтому
+   проверить правки можно не перезапуская nginx — со сломанным конфигом он не
+   поднимется и панель ляжет:
+
+   ```bash
+   docker compose exec nginx nginx -t
+   ```
+
+   После `test is successful` примените без простоя:
+
+   ```bash
+   docker compose exec nginx nginx -s reload
+   ```
+
+6. Включите защищённые cookie в `.env` и перезапустите панель. Делайте это
+   только когда HTTPS уже работает: иначе браузер не сохранит cookie сессии и
+   войти не получится.
 
    ```dotenv
    WEB_SECURE_COOKIES=true
    ```
 
    ```bash
-   docker compose up -d
-   docker compose restart nginx
+   docker compose up -d web
    ```
 
-Продление сертификата — той же командой `certonly` по расписанию (cron или
-systemd timer) с последующим `docker compose restart nginx`.
+Сертификат живёт 90 дней. Продление — командой `renew` по расписанию; она
+обновляет только то, чему осталось меньше 30 дней, поэтому запускать её
+ежедневно безопасно. Строка для `crontab -e`, где `/opt/social-autoposting` —
+путь к репозиторию:
+
+```
+0 3 * * * docker run --rm -v social-autoposting_letsencrypt:/etc/letsencrypt -v social-autoposting_certbot_webroot:/var/www/certbot certbot/certbot renew --quiet && cd /opt/social-autoposting && docker compose exec -T nginx nginx -s reload
+```
 
 Дополнительно стоит закрыть фаерволом всё, кроме 22, 80 и 443:
 
